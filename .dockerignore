@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+copilot.db
+copilot.db-wal
+copilot.db-shm
+.env
+.git/
+tests/test_copilot.db*

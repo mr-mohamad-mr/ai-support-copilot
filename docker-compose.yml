@@ -1,0 +1,41 @@
+# AI Support Copilot — local Docker Compose stack (stage 4).
+# One service (the FastAPI app) plus a named volume for the SQLite
+# database, so data survives `docker compose down`. No other services:
+# retrieval is stdlib TF-IDF and storage is SQLite, so nothing else is
+# needed to run the platform.
+#
+# Usage:
+#   cp .env.example .env        # then set a real COPILOT_SECRET
+#   docker compose up --build   # http://127.0.0.1:8000/
+#   docker compose run --rm api python scripts/seed_demo.py --demo-chats
+#   docker compose down         # data stays in the copilot-data volume
+
+services:
+  api:
+    build: .
+    image: ai-support-copilot:latest
+    container_name: copilot-api
+    restart: unless-stopped
+    ports:
+      # Bind to localhost only: the app has no TLS of its own.
+      - "127.0.0.1:${COPILOT_PORT:-8000}:8000"
+    environment:
+      COPILOT_DB_PATH: /data/copilot.db
+      COPILOT_SECRET: ${COPILOT_SECRET:?set COPILOT_SECRET in .env}
+    volumes:
+      - copilot-data:/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)",
+        ]
+      interval: 30s
+      timeout: 5s
+      start-period: 10s
+      retries: 3
+
+volumes:
+  copilot-data:

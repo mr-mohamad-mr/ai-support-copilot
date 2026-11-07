@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Embeddable chat widget — AI Support Copilot</title>
+  <meta name="description" content="Demo page for the embeddable Support Copilot chat widget.">
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <header class="app-header">
+    <span class="brand">Support Copilot<span class="dot">.</span> <span style="font-weight:400">widget demo</span></span>
+    <nav aria-label="Main"><a href="/" style="color:#fff;">Open the app</a></nav>
+  </header>
+  <main>
+    <div class="card">
+      <h1>Embeddable chat widget</h1>
+      <p class="lede">One script tag adds a floating support chat to any
+      website. It talks to the same <code>/chat</code> endpoint as the app,
+      shows citations, and flags handoffs to a human.</p>
+      <h2>Embed snippet</h2>
+<pre class="mono" id="snippet">&lt;script src="/static/js/widget.js"
+        data-api=""
+        data-token="PASTE_A_SUPPORT_TOKEN_HERE"
+        data-title="Need help?"&gt;&lt;/script&gt;</pre>
+      <p>Use a dedicated support user for the widget token and rotate it
+      like any credential. <code>data-api</code> is the Copilot base URL
+      (empty means “same origin as this page”). The button at the bottom
+      right of this page is the live widget — it needs a token to answer.
+      Get one by signing in to the app and using its login token, or leave
+      the demo as-is to see the unconfigured state.</p>
+      <p><a href="/">Open the full app →</a></p>
+    </div>
+  </main>
+  <script src="/static/js/widget.js" data-api="" data-title="Need help?"></script>
+</body>
+</html>

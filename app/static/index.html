@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Support Copilot</title>
+  <meta name="description" content="Multi-tenant AI support platform: answers customer questions from your own documents, with citations — and escalates to a human when it doesn't know.">
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <header class="app-header">
+    <span class="brand">Support Copilot<span class="dot">.</span></span>
+    <span class="tenant" id="tenant-name" hidden></span>
+    <nav id="main-nav" aria-label="Main" hidden>
+      <button type="button" data-route="chat">Chat</button>
+      <button type="button" data-route="admin">Admin</button>
+      <button type="button" data-route="analytics">Analytics</button>
+    </nav>
+    <button type="button" class="ghost logout" id="logout-btn" hidden>Sign out</button>
+  </header>
+
+  <main>
+    <p id="toast" role="status" aria-live="polite"></p>
+
+    <!-- Auth -->
+    <section class="view" id="view-login" aria-labelledby="auth-heading" hidden>
+      <div class="card auth-card">
+        <h1 id="auth-heading">Sign in to your workspace</h1>
+        <p class="lede">One account per company. Your documents and chats are
+        visible only inside your own workspace.</p>
+        <div class="auth-tabs" role="tablist" aria-label="Authentication">
+          <button type="button" data-tab="login" role="tab" aria-selected="true">Sign in</button>
+          <button type="button" data-tab="register" role="tab" aria-selected="false">Create workspace</button>
+        </div>
+
+        <form id="login-form" novalidate>
+          <div class="field">
+            <label for="login-username">Username</label>
+            <input type="text" id="login-username" name="username" autocomplete="username" required>
+          </div>
+          <div class="field">
+            <label for="login-password">Password</label>
+            <input type="password" id="login-password" name="password" autocomplete="current-password" required>
+          </div>
+          <button type="submit" class="primary">Sign in</button>
+        </form>
+
+        <form id="register-form" novalidate hidden>
+          <div class="field">
+            <label for="reg-tenant">Company / workspace name</label>
+            <input type="text" id="reg-tenant" name="tenant_name" autocomplete="organization" required>
+          </div>
+          <div class="field">
+            <label for="reg-username">Username</label>
+            <input type="text" id="reg-username" name="username" autocomplete="username" required>
+            <p class="hint">Letters, digits, underscore, dot or dash; at least 3 characters.</p>
+          </div>
+          <div class="field">
+            <label for="reg-password">Password</label>
+            <input type="password" id="reg-password" name="password" autocomplete="new-password" required>
+            <p class="hint">At least 8 characters.</p>
+          </div>
+          <button type="submit" class="primary">Create workspace</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- Chat -->
+    <section class="view" id="view-chat" aria-labelledby="chat-heading" hidden>
+      <h1 id="chat-heading">Chat</h1>
+      <p class="lede">Ask about your support documents. Answers quote the
+      documents they come from — with citations — and hand off to a human
+      when nothing matches.</p>
+      <div class="chat-layout">
+        <aside class="card" aria-label="Conversations">
+          <button type="button" id="chat-new" class="primary" style="width:100%; margin-bottom:0.7rem;">+ New chat</button>
+          <ul class="conv-list" id="conv-list"></ul>
+        </aside>
+        <div class="card">
+          <h2 id="chat-title">Chat</h2>
+          <div class="chat-log" id="chat-log" role="log" aria-live="polite" aria-label="Chat messages">
+            <p class="empty-state" id="chat-empty">No messages yet — ask your first question below.</p>
+          </div>
+          <p class="typing" id="chat-typing" hidden>Support Copilot is thinking…</p>
+          <form id="chat-form" class="chat-composer">
+            <label for="chat-input" class="hint" style="position:absolute; left:-9999px;">Your question</label>
+            <textarea id="chat-input" name="question" rows="2" maxlength="2000"
+              placeholder="Ask a question about your products or policies…" required></textarea>
+            <button type="submit" class="primary" id="chat-send">Send</button>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- Admin -->
+    <section class="view" id="view-admin" aria-labelledby="admin-heading" hidden>
+      <h1 id="admin-heading">Admin</h1>
+      <p class="lede">Manage the knowledge base your customers' questions are
+      answered from, and review the conversations that needed a human.</p>
+
+      <div class="admin-grid">
+        <div class="card">
+          <h2>Add a document</h2>
+          <form id="doc-form" novalidate>
+            <div class="field">
+              <label for="doc-title">Title</label>
+              <input type="text" id="doc-title" name="title" maxlength="200" required>
+            </div>
+            <div class="field">
+              <label for="doc-source">Source</label>
+              <input type="text" id="doc-source" name="source" maxlength="100" placeholder="manual">
+              <p class="hint">Where this text came from, e.g. “help centre”, “returns policy”.</p>
+            </div>
+            <div class="field">
+              <label for="doc-content">Content</label>
+              <textarea id="doc-content" name="content" rows="8" required></textarea>
+              <p class="hint" id="doc-count">0 characters</p>
+            </div>
+            <button type="submit" class="primary">Add document</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <h2>Knowledge base</h2>
+          <table aria-label="Documents in the knowledge base">
+            <thead>
+              <tr><th scope="col">Title</th><th scope="col">Source</th>
+              <th scope="col" class="num">Chars</th><th scope="col" class="num">Chunks</th>
+              <th scope="col">Added</th><th scope="col"><span style="position:absolute; left:-9999px;">Actions</span></th></tr>
+            </thead>
+            <tbody id="doc-table-body"></tbody>
+          </table>
+          <p class="empty-state" id="doc-empty" hidden>No documents yet — add one to start answering questions.</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Conversations</h2>
+        <ul class="conv-list" id="admin-conv-list"></ul>
+        <div id="admin-conv-detail" hidden>
+          <h3 id="admin-conv-title"></h3>
+          <div id="admin-conv-messages" class="conversation-detail"></div>
+          <p><button type="button" class="danger" id="admin-conv-delete">Delete conversation</button></p>
+        </div>
+      </div>
+    </section>
+    <!-- Analytics -->
+    <section class="view" id="view-analytics" aria-labelledby="analytics-heading" hidden>
+      <h1 id="analytics-heading">Analytics</h1>
+      <p class="lede">How the Copilot is doing: questions answered, handoffs,
+      and the documents customers actually get answers from.</p>
+
+      <div class="range-row" id="analytics-range" role="group" aria-label="Date range">
+        <span id="analytics-days-label">Last 14 days</span>
+        <button type="button" data-days="7" aria-pressed="false">7 days</button>
+        <button type="button" data-days="14" aria-pressed="true">14 days</button>
+        <button type="button" data-days="30" aria-pressed="false">30 days</button>
+      </div>
+
+      <div class="metric-grid" id="analytics-cards" aria-label="Headline metrics"></div>
+
+      <div class="card">
+        <h2>Questions per day</h2>
+        <div class="bar-chart" id="analytics-chart" aria-label="Daily question counts"></div>
+        <p class="empty-state" id="analytics-chart-empty" hidden>No questions in this period yet.</p>
+      </div>
+
+      <div class="admin-grid">
+        <div class="card">
+          <h2>Top cited documents</h2>
+          <table aria-label="Most cited documents">
+            <thead>
+              <tr><th scope="col">Document</th><th scope="col" class="num">Citations</th></tr>
+            </thead>
+            <tbody id="analytics-top-docs"></tbody>
+          </table>
+          <p class="empty-state" id="analytics-top-docs-empty" hidden>No answered questions yet — citations appear once the Copilot answers from a document.</p>
+        </div>
+
+        <div class="card">
+          <h2>Recent questions needing a human</h2>
+          <ul class="conv-list" id="analytics-handoffs"></ul>
+          <p class="empty-state" id="analytics-handoffs-empty" hidden>No handoffs in this period — every question was answered from the knowledge base.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <noscript><p style="padding:1rem;">AI Support Copilot needs JavaScript enabled.</p></noscript>
+
+  <script src="/static/js/api.js"></script>
+  <script src="/static/js/chat.js"></script>
+  <script src="/static/js/admin.js"></script>
+  <script src="/static/js/analytics.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
