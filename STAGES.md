@@ -232,6 +232,7 @@ fits a self-contained per-tenant usage summary computed from stored data.
   today's 3/2/1, top documents Returns Policy + Shipping FAQ (1 each),
   recent handoffs = the Paris question; unauthenticated → 401;
   `/`, `/widget`, `analytics.js`, `style.css` all 200.
-- **Flagship complete — publish pending.** All four stages done and
-  verified; GitHub publish (repo `ai-support-copilot`), CV entry and
-  profile README featured link follow in this run.
+- **Flagship complete — published to GitHub 2026-11-07:**
+  https://github.com/mr-mohamad-mr/ai-support-copilot — snapshot commit
+  `bd9842ad0963f6c05d75278739db611fea8791b4` on `main` (35 files); CV entry
+  added, profile README featured projects updated.

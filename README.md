@@ -6,8 +6,8 @@ with citations — escalating to a human when it doesn't know.
 
 > **Status: complete — all 4 stages done** (backend core + retrieval/chat
 > API + web frontend + analytics & Docker). 68 pytest tests passing.
-> GitHub publish (repo `ai-support-copilot`) follows in this run; see
-> `STAGES.md` for the stage log.
+> Published to GitHub: https://github.com/mr-mohamad-mr/ai-support-copilot
+> (see `STAGES.md` for the stage log).
 
 ## Architecture
 
