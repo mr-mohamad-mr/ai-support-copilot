@@ -115,6 +115,17 @@
         return request("/conversations/" + id, { method: "DELETE" });
       },
 
+      getWidgetKey: function () { return request("/widget-key"); },
+      rotateWidgetKey: function () {
+        return request("/widget-key", { method: "POST", body: {} });
+      },
+      setWidgetOrigins: function (origins) {
+        return request("/widget-key/origins", {
+          method: "PUT",
+          body: { allowed_origins: origins },
+        });
+      },
+
       getAnalytics: function (days) {
         return request("/analytics/summary?days=" + (days || 14));
       },

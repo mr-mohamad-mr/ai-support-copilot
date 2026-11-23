@@ -19,16 +19,29 @@
       website. It talks to the same <code>/chat</code> endpoint as the app,
       shows citations, and flags handoffs to a human.</p>
       <h2>Embed snippet</h2>
-<pre class="mono" id="snippet">&lt;script src="/static/js/widget.js"
-        data-api=""
-        data-token="PASTE_A_SUPPORT_TOKEN_HERE"
+<pre class="mono" id="snippet">&lt;script src="https://YOUR-COPILOT-HOST/static/js/widget.js"
+        data-api="https://YOUR-COPILOT-HOST"
+        data-widget-key="wk_YOUR_PUBLIC_WIDGET_KEY"
         data-title="Need help?"&gt;&lt;/script&gt;</pre>
-      <p>Use a dedicated support user for the widget token and rotate it
-      like any credential. <code>data-api</code> is the Copilot base URL
-      (empty means “same origin as this page”). The button at the bottom
-      right of this page is the live widget — it needs a token to answer.
-      Get one by signing in to the app and using its login token, or leave
-      the demo as-is to see the unconfigured state.</p>
+      <h2>Setting it up</h2>
+      <ol>
+        <li>Sign in as the workspace owner or an admin, open <strong>Admin →
+        Website widget</strong> and create a widget key (or call
+        <code>POST /widget-key</code>). The key is shown once; rotating it
+        disables the old one immediately.</li>
+        <li>Add your website's origin, e.g. <code>https://shop.example.com</code>,
+        to the allowed origins. Browsers on any other site are refused.</li>
+        <li>Paste the snippet with your key. <code>data-api</code> is the
+        Copilot base URL (empty means “same origin as this page”).</li>
+      </ol>
+      <p>The widget key is <strong>public by design</strong>: it can only ask
+      questions through <code>/chat</code>, is rate limited per visitor, and
+      cannot read or change documents, users or conversations. Never put a
+      login token in a web page.</p>
+      <p>The button at the bottom right of this page is the live widget,
+      shown unconfigured. Pages served by the Copilot itself are always an
+      allowed origin, so you can try a key here by adding
+      <code>data-widget-key</code> to this page's script tag.</p>
       <p><a href="/">Open the full app →</a></p>
     </div>
   </main>

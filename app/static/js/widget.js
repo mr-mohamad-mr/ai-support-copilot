@@ -3,15 +3,19 @@
 
      <script src="https://copilot.example.com/static/js/widget.js"
              data-api="https://copilot.example.com"
-             data-token="PASTE_A_SUPPORT_TOKEN_HERE"
+             data-widget-key="wk_..."
              data-title="Need help?"></script>
 
    The widget renders a floating button + chat panel, talks to the same
    /chat endpoint as the main app, and shows citations and the human
    handoff state exactly like the app does. All rendering is
    textContent-only, so answers can never inject markup into the host page.
-   The token is a normal user token: create a dedicated low-privilege
-   user for the widget and rotate it like any credential. */
+
+   data-widget-key is the tenant's PUBLIC widget key (Admin → Website
+   widget, or POST /widget-key). It can only ask /chat questions; it cannot
+   read or change documents, users or conversations. The site's origin
+   must be on the tenant's allowlist. Never put a login token (JWT) in a
+   web page: the old data-token attribute is refused. */
 
 (function (global) {
   "use strict";
@@ -32,12 +36,13 @@
     var script = currentScript();
     if (!script) { return; }
     var apiBase = (script.getAttribute("data-api") || "").replace(/\/$/, "");
-    var token = script.getAttribute("data-token") || "";
+    var widgetKey = script.getAttribute("data-widget-key") || "";
     var title = script.getAttribute("data-title") || "Support Copilot";
-    if (!token) {
-      if (global.console) {
-        global.console.warn("[copilot-widget] data-token is missing; the widget will not send messages.");
-      }
+    if (script.getAttribute("data-token") && global.console) {
+      global.console.error("[copilot-widget] data-token is no longer supported: a login token in a public page gives full account access. Use data-widget-key with your public widget key instead.");
+    }
+    if (!widgetKey && global.console) {
+      global.console.warn("[copilot-widget] data-widget-key is missing; the widget will not send messages.");
     }
 
     var open = false;
@@ -121,7 +126,7 @@
       event.preventDefault();
       var question = input.value.trim();
       if (!question || sending) { return; }
-      if (!token) {
+      if (!widgetKey) {
         appendMessage("assistant", "This chat widget isn't configured yet — please contact support directly.");
         return;
       }
@@ -134,11 +139,19 @@
       if (conversationId) { body.conversation_id = conversationId; }
       global.fetch(apiBase + "/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+        headers: { "Content-Type": "application/json", "X-Widget-Key": widgetKey },
         body: JSON.stringify(body),
       }).then(function (resp) {
-        return resp.json().then(function (data) {
-          if (!resp.ok) { throw new Error((data && data.detail) || "Request failed"); }
+        if (resp.status === 429) {
+          var wait = resp.headers.get("Retry-After");
+          throw new Error("You're sending messages too quickly — please wait " +
+            (wait ? wait + " seconds" : "a moment") + ".");
+        }
+        return resp.json().catch(function () { return {}; }).then(function (data) {
+          if (!resp.ok) {
+            var detail = data && data.detail;
+            throw new Error(typeof detail === "string" ? detail : "Request failed (" + resp.status + ")");
+          }
           return data;
         });
       }).then(function (data) {

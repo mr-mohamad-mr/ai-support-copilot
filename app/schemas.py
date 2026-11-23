@@ -142,6 +142,7 @@ class ConversationOut(BaseModel):
     title: str
     message_count: int
     created_at: str
+    channel: str = "app"  # "app" (signed-in user) or "widget" (public widget key)
 
 
 class ConversationDetail(ConversationOut):
@@ -155,7 +156,32 @@ class PagedConversations(BaseModel):
     page_size: int
 
 
-# --- Analytics (stage 4) -------------------------------------------------
+# --- Public widget key ----------------------------------------------------
+
+MAX_WIDGET_ORIGINS = 20
+
+
+class WidgetOriginsIn(BaseModel):
+    allowed_origins: list[str] = Field(default_factory=list, max_length=MAX_WIDGET_ORIGINS)
+
+
+class WidgetKeyIn(BaseModel):
+    # None keeps the current allowlist when rotating.
+    allowed_origins: list[str] | None = Field(default=None, max_length=MAX_WIDGET_ORIGINS)
+
+
+class WidgetKeyInfo(BaseModel):
+    configured: bool
+    key_prefix: str | None = None
+    created_at: str | None = None
+    allowed_origins: list[str]
+
+
+class WidgetKeyCreated(WidgetKeyInfo):
+    key: str  # shown once; only a hash is stored
+
+
+# --- Analytics ------------------------------------------------------------
 
 
 class DailyPoint(BaseModel):

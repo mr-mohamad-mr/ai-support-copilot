@@ -29,6 +29,8 @@ def test_index_serves_app_shell(client):
         'id="chat-log"',
         'id="doc-form"',
         'id="admin-conv-list"',
+        'id="widget-key-form"',
+        'id="widget-origins"',
         'id="analytics-cards"',
         'id="analytics-chart"',
         'id="analytics-chart-empty"',
@@ -56,7 +58,14 @@ def test_widget_demo_page_served(client):
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]
     assert "widget.js" in resp.text
-    assert "data-token" in resp.text
+    assert "data-widget-key" in resp.text
+    assert "data-token" not in resp.text
+
+
+def test_widget_js_uses_public_widget_key_not_jwt():
+    src = (STATIC / "js" / "widget.js").read_text()
+    assert "X-Widget-Key" in src
+    assert '"Authorization"' not in src
 
 
 @pytest.mark.parametrize(

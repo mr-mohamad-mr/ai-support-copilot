@@ -37,12 +37,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 
-from . import config, ratelimit
+from . import config, ratelimit, widget
 from .analytics import DEFAULT_DAYS, MAX_DAYS, compute_summary
 from .chunking import chunk_text
 from .database import DEFAULT_DB_PATH, connect
@@ -73,6 +73,10 @@ from .schemas import (
     UserCreate,
     UserOut,
     UserSummary,
+    WidgetKeyCreated,
+    WidgetKeyIn,
+    WidgetKeyInfo,
+    WidgetOriginsIn,
 )
 from .security import (
     AuthError,
@@ -320,6 +324,66 @@ def delete_user(user_id: int, user: ManagerDep, db: DbDep) -> None:
     db.commit()
 
 
+# ---------------------------------------------------------------------------
+# Public widget key + origin allowlist (managers only). The key is shown
+# once on create/rotate; only its SHA-256 hash is stored.
+# ---------------------------------------------------------------------------
+
+
+def _widget_info(db: sqlite3.Connection, tenant_id: int) -> WidgetKeyInfo:
+    row = db.execute(
+        "SELECT key_prefix, created_at FROM widget_keys WHERE tenant_id = ?", (tenant_id,)
+    ).fetchone()
+    return WidgetKeyInfo(
+        configured=row is not None,
+        key_prefix=row["key_prefix"] if row else None,
+        created_at=row["created_at"] if row else None,
+        allowed_origins=widget.allowed_origins(db, tenant_id),
+    )
+
+
+def _set_origins_or_422(db: sqlite3.Connection, tenant_id: int, origins: list[str]) -> None:
+    try:
+        widget.set_origins(db, tenant_id, origins)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.get("/widget-key", response_model=WidgetKeyInfo)
+def get_widget_key(user: ManagerDep, db: DbDep) -> WidgetKeyInfo:
+    return _widget_info(db, user["tenant_id"])
+
+
+@app.post("/widget-key", response_model=WidgetKeyCreated, status_code=status.HTTP_201_CREATED)
+def create_widget_key(user: ManagerDep, db: DbDep, data: WidgetKeyIn | None = None) -> WidgetKeyCreated:
+    """Create the tenant's widget key, or rotate it: the old key stops
+    working immediately. Optionally sets the origin allowlist too."""
+    key = widget.new_key()
+    db.execute("DELETE FROM widget_keys WHERE tenant_id = ?", (user["tenant_id"],))
+    db.execute(
+        "INSERT INTO widget_keys (tenant_id, key_hash, key_prefix) VALUES (?, ?, ?)",
+        (user["tenant_id"], widget.hash_key(key), widget.display_prefix(key)),
+    )
+    if data is not None and data.allowed_origins is not None:
+        _set_origins_or_422(db, user["tenant_id"], data.allowed_origins)
+    db.commit()
+    return WidgetKeyCreated(key=key, **_widget_info(db, user["tenant_id"]).model_dump())
+
+
+@app.put("/widget-key/origins", response_model=WidgetKeyInfo)
+def set_widget_origins(data: WidgetOriginsIn, user: ManagerDep, db: DbDep) -> WidgetKeyInfo:
+    _set_origins_or_422(db, user["tenant_id"], data.allowed_origins)
+    db.commit()
+    return _widget_info(db, user["tenant_id"])
+
+
+@app.delete("/widget-key", status_code=status.HTTP_204_NO_CONTENT)
+def revoke_widget_key(user: ManagerDep, db: DbDep) -> None:
+    db.execute("DELETE FROM widget_keys WHERE tenant_id = ?", (user["tenant_id"],))
+    db.commit()
+
+
 @app.post("/documents", response_model=DocumentDetail, status_code=status.HTTP_201_CREATED)
 def create_document(data: DocumentCreate, user: ManagerDep, db: DbDep) -> DocumentDetail:
     chunks = chunk_text(data.content)
@@ -468,19 +532,108 @@ def _store_message(
     )
 
 
+def chat_principal(
+    request: Request,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    db: DbDep,
+    x_widget_key: Annotated[str | None, Header()] = None,
+) -> dict:
+    """Who is asking: a signed-in user (Bearer JWT) or a website visitor
+    using the tenant's public widget key (``X-Widget-Key``).
+
+    Widget requests from a browser must come from an origin on the
+    tenant's allowlist (or from this app's own pages), and are rate
+    limited per key + client IP and per key overall.
+    """
+    if credentials is not None:
+        user = current_user(credentials, db)
+        return {
+            "tenant_id": user["tenant_id"],
+            "user_id": user["id"],
+            "channel": "app",
+            "cors": {},
+        }
+    if not x_widget_key:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "missing bearer token or widget key")
+    tenant_id = widget.tenant_for_key(db, x_widget_key)
+    if tenant_id is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid widget key")
+    cors: dict[str, str] = {}
+    origin = request.headers.get("origin")
+    if origin:
+        host = request.headers.get("host")
+        if not widget.origin_allowed_for_tenant(db, tenant_id, origin, host):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "origin not allowed for this widget key")
+        cors = widget.cors_headers(origin)
+    key_hash = widget.hash_key(x_widget_key)
+    wait = ratelimit.widget_chat.hit(f"{key_hash}|{client_ip(request)}")
+    if not wait:
+        wait = ratelimit.widget_chat_key.hit(key_hash)
+    if wait:
+        raise _too_many(wait, headers=cors)
+    return {"tenant_id": tenant_id, "user_id": None, "channel": "widget", "cors": cors}
+
+
+PrincipalDep = Annotated[dict, Depends(chat_principal)]
+
+
+@app.options("/chat", include_in_schema=False)
+def chat_preflight(request: Request, db: DbDep) -> Response:
+    """CORS preflight for the embeddable widget. Only POST with the
+    ``Content-Type`` and ``X-Widget-Key`` headers is allowed, and only from
+    an allowlisted origin. (An ``Authorization`` header is never allowed
+    cross-origin, so a user's JWT cannot be used from another site.)"""
+    origin = request.headers.get("origin")
+    method = request.headers.get("access-control-request-method", "")
+    requested = {
+        h.strip().lower()
+        for h in request.headers.get("access-control-request-headers", "").split(",")
+        if h.strip()
+    }
+    if (
+        not origin
+        or method.upper() != widget.ALLOWED_METHODS
+        or not requested <= widget.ALLOWED_HEADERS
+        or not widget.origin_allowed_for_any_tenant(db, origin, request.headers.get("host"))
+    ):
+        return Response(status_code=status.HTTP_403_FORBIDDEN, headers={"Vary": "Origin"})
+    return Response(
+        status_code=status.HTTP_204_NO_CONTENT,
+        headers={
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Methods": widget.ALLOWED_METHODS,
+            "Access-Control-Allow-Headers": "Content-Type, X-Widget-Key",
+            "Access-Control-Max-Age": "600",
+            "Vary": "Origin",
+        },
+    )
+
+
 @app.post("/chat", response_model=ChatOut)
-def chat(data: ChatIn, user: UserDep, db: DbDep) -> ChatOut:
-    tenant_id = user["tenant_id"]
+def chat(data: ChatIn, principal: PrincipalDep, response: Response, db: DbDep) -> ChatOut:
+    tenant_id = principal["tenant_id"]
+    for name, value in principal["cors"].items():
+        response.headers[name] = value
 
     # Resolve (or create) the conversation first: the user's question is
     # stored even when retrieval finds nothing, so handoffs are never lost.
     if data.conversation_id is not None:
         conv = _conversation_or_404(db, data.conversation_id, tenant_id)
+        # A widget visitor may only continue widget conversations.
+        if principal["channel"] == "widget" and conv["channel"] != "widget":
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND, "conversation not found", headers=principal["cors"]
+            )
         conversation_id = conv["id"]
     else:
         cur = db.execute(
-            "INSERT INTO conversations (tenant_id, user_id, title) VALUES (?, ?, ?)",
-            (tenant_id, user["id"], _conversation_title(data.question)),
+            "INSERT INTO conversations (tenant_id, user_id, title, channel) VALUES (?, ?, ?, ?)",
+            (
+                tenant_id,
+                principal["user_id"],
+                _conversation_title(data.question),
+                principal["channel"],
+            ),
         )
         conversation_id = cur.lastrowid
     _store_message(db, conversation_id, tenant_id, "user", data.question)
@@ -547,6 +700,7 @@ def list_conversations(
                 title=r["title"],
                 message_count=r["message_count"],
                 created_at=r["created_at"],
+                channel=r["channel"],
             )
             for r in rows
         ],
@@ -568,6 +722,7 @@ def get_conversation(conv_id: int, user: UserDep, db: DbDep) -> ConversationDeta
         title=conv["title"],
         message_count=len(rows),
         created_at=conv["created_at"],
+        channel=conv["channel"],
         messages=[
             MessageOut(
                 id=r["id"],

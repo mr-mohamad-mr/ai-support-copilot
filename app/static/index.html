@@ -134,6 +134,30 @@
         </div>
       </div>
 
+      <div class="card" id="widget-card">
+        <h2>Website widget</h2>
+        <p class="hint">A public key that lets the embeddable widget on your
+        website ask questions — and nothing else. It is shown once; rotating
+        it disables the old key immediately.</p>
+        <p id="widget-key-status">No widget key yet.</p>
+        <div id="widget-key-new" hidden>
+          <div class="field">
+            <label for="widget-key-value">Your new widget key (copy it now)</label>
+            <input type="text" id="widget-key-value" readonly>
+          </div>
+          <pre class="mono" id="widget-snippet"></pre>
+        </div>
+        <p><button type="button" class="primary" id="widget-key-rotate">Create widget key</button></p>
+        <form id="widget-key-form" novalidate>
+          <div class="field">
+            <label for="widget-origins">Allowed website origins (one per line)</label>
+            <textarea id="widget-origins" rows="3" placeholder="https://shop.example.com"></textarea>
+            <p class="hint">Only pages on these origins can use the widget. Pages served by the Copilot itself are always allowed.</p>
+          </div>
+          <button type="submit">Save origins</button>
+        </form>
+      </div>
+
       <div class="card">
         <h2>Conversations</h2>
         <ul class="conv-list" id="admin-conv-list"></ul>
