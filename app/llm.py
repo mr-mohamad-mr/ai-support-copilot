@@ -93,7 +93,10 @@ class OpenAICompatibleProvider:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        request = urllib.request.Request(self.url, data=body, headers=headers, method="POST")
+        # The URL comes from operator configuration, never from a request.
+        request = urllib.request.Request(  # noqa: S310
+            self.url, data=body, headers=headers, method="POST"
+        )
         with urllib.request.urlopen(request, timeout=self.timeout) as resp:  # noqa: S310
             data = json.loads(resp.read().decode())
         return data["choices"][0]["message"]["content"] or ""

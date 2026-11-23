@@ -1,4 +1,4 @@
-"""API tests for stage 4: GET /analytics/summary.
+"""API tests for GET /analytics/summary.
 
 Covers headline totals, handoff rate, the daily series, top cited
 documents, recent handoffs, and tenant isolation — all computed from
@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-from conftest import alice, bob, client, register, auth_headers  # noqa: F401
+from conftest import auth_headers, register  # noqa: F401
 
 DEMO_DIR = Path(__file__).resolve().parent.parent / "demo-data"
 

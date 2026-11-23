@@ -1,7 +1,7 @@
-# AI Support Copilot — local Docker Compose stack (stage 4).
+# AI Support Copilot — local Docker Compose stack.
 # One service (the FastAPI app) plus a named volume for the SQLite
 # database, so data survives `docker compose down`. No other services:
-# retrieval is stdlib TF-IDF and storage is SQLite, so nothing else is
+# retrieval is SQLite FTS5 and storage is SQLite, so nothing else is
 # needed to run the platform.
 #
 # Usage:
@@ -22,6 +22,12 @@ services:
     environment:
       COPILOT_DB_PATH: /data/copilot.db
       COPILOT_SECRET: ${COPILOT_SECRET:?set COPILOT_SECRET in .env}
+      COPILOT_ENV: ${COPILOT_ENV:-production}
+      # Optional grounded LLM step; empty provider = extractive answers only.
+      COPILOT_LLM_PROVIDER: ${COPILOT_LLM_PROVIDER:-}
+      COPILOT_LLM_BASE_URL: ${COPILOT_LLM_BASE_URL:-}
+      COPILOT_LLM_MODEL: ${COPILOT_LLM_MODEL:-}
+      COPILOT_LLM_API_KEY: ${COPILOT_LLM_API_KEY:-}
     volumes:
       - copilot-data:/data
     healthcheck:

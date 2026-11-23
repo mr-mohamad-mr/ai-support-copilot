@@ -1,16 +1,17 @@
 """Recursive, structure-aware text chunking for the RAG knowledge base.
 
-Design follows the ``chunking_strategy`` skill:
-- Level 2/3 (recursive + structure-aware): split on structural boundaries
+Design:
+- Recursive and structure-aware: split on structural boundaries
   first (blank lines → newlines → sentence ends → words), so chunks keep
   semantic units together instead of cutting mid-sentence.
 - Defaults: 1000 characters per chunk with 150 characters (~15%) overlap,
-  inside the skill's recommended 256–1024 / 10–20% band.
+  a common choice for retrieval (small enough to be specific, large
+  enough to keep a policy paragraph together).
 - Markdown heading context: the most recent ``#`` heading active at a
   chunk's start is stored with it, so a retrieved chunk stays interpretable
   on its own (contextual-retrieval style, without an LLM call).
 - Every chunk records exact ``char_start``/``char_end`` offsets into the
-  source document, so stage 2 can cite the precise passage an answer
+  source document, so chat answers can cite the precise passage they
   came from.
 
 The implementation works on *segments* (sentences/paragraphs with known
@@ -119,14 +120,20 @@ def _hard_split(segment: _Segment, chunk_size: int) -> list[_Segment]:
             text = " ".join(current)
             # pos points one past the trailing space of the last word, so
             # the piece's exclusive end is pos - 1 and its start is end - len.
-            pieces.append(_Segment(text=text, start=pos - 1 - current_len, end=pos - 1, heading=segment.heading))
+            pieces.append(
+                _Segment(
+                    text=text, start=pos - 1 - current_len, end=pos - 1, heading=segment.heading
+                )
+            )
             current, current_len = [], 0
         current.append(word)
         current_len += word_len
         pos += len(word) + 1
     if current:
         text = " ".join(current)
-        pieces.append(_Segment(text=text, start=pos - 1 - current_len, end=pos - 1, heading=segment.heading))
+        pieces.append(
+            _Segment(text=text, start=pos - 1 - current_len, end=pos - 1, heading=segment.heading)
+        )
     return pieces
 
 

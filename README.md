@@ -1,86 +1,245 @@
 # AI Support Copilot
 
+[![CI](https://github.com/mr-mohamad-mr/ai-support-copilot/actions/workflows/ci.yml/badge.svg)](https://github.com/mr-mohamad-mr/ai-support-copilot/actions/workflows/ci.yml)
+
 Multi-tenant AI support platform: each tenant uploads its own support
 documents, and the platform answers customer questions from those documents
-with citations — escalating to a human when it doesn't know.
+with citations, escalating to a human when it doesn't know. It ships with a
+web app for the support team and an embeddable chat widget for the tenant's
+own website.
 
-> **Status: complete — all 4 stages done** (backend core + retrieval/chat
-> API + web frontend + analytics & Docker). 68 pytest tests passing.
-> Published to GitHub: https://github.com/mr-mohamad-mr/ai-support-copilot
-> (see `STAGES.md` for the stage log).
+![The web app answering from the knowledge base, with a citation](docs/screenshots/app-chat.png)
+
+## Features
+
+- **Multi-tenant by construction**: every row carries `tenant_id`, taken
+  from the caller's token or widget key, never from the request.
+- **Cited answers, honest handoffs**: SQLite FTS5 (BM25) retrieval; the
+  answer quotes the best sentences with `[n]` citations (document, chunk,
+  exact character offsets, score). When nothing is relevant enough, the
+  question is flagged `needs_human` instead of guessed.
+- **Optional grounded LLM step**: plug in any OpenAI-compatible model
+  (OpenAI, a hosted API, or a free local one such as Ollama). It only sees
+  the retrieved chunks, and its reply is rejected unless every citation
+  maps to one of them. Off by default.
+- **Embeddable widget with a public key**: a per-tenant widget key that can
+  only ask questions, a CORS origin allowlist and per-visitor rate limits.
+- **Roles**: owner and admins manage the tenant; agents chat and review.
+- **Analytics**: questions, handoff rate, daily series, the documents that
+  actually answer questions, recent handoffs.
+- Plain FastAPI + stdlib `sqlite3`, vanilla JS frontend, no build step.
 
 ## Architecture
 
 ```
-┌────────────────────────────────────────────────────────────┐
-│ FastAPI app (app/main.py) — one process, SQLite database   │
-│  /auth/*      register (tenant + owner), login, me         │
-│  /tenants/me  current tenant                               │
-│  /documents   ingest (chunk on write), list, get, delete   │
-│  /chat        ask a question; TF-IDF retrieval + citations │
-│  /conversations  stored chats: list, get, delete           │
-│  /analytics/summary  per-tenant usage analytics (stage 4)  │
-├────────────────────────────────────────────────────────────┤
-│ app/security.py  PBKDF2 passwords + HS256 JWT (stdlib)    │
-│                  token carries tenant_id + role            │
-│ app/chunking.py  recursive chunker, 1000 chars / 15% overlap│
-│                  heading context + exact char offsets      │
-│ app/retrieval.py TF-IDF retrieval (stdlib), cosine ≥ 0.10  │
-│                  extractive answers with [n] citations,    │
-│                  needs_human handoff when nothing matches │
-│ app/analytics.py per-tenant usage summary (stage 4):       │
-│                  counts, handoff rate, daily series, top   │
-│                  cited documents, recent handoffs          │
-│ app/database.py  tenants / users / documents / chunks      │
-│                  conversations / messages (stage 2)        │
-│                  + citations JSON on messages (stage 4)    │
-│ app/static/      vanilla JS frontend (stage 3 + 4):        │
-│                  index.html shell, api/chat/admin/         │
-│                  analytics.js, widget.js embeddable chat,  │
-│                  style.css                                  │
-└────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ FastAPI app (app/main.py), one process, one SQLite database      │
+│  /auth/*            register (tenant + owner), login, me         │
+│  /users             owner/admin manage admins and agents         │
+│  /widget-key        public widget key + CORS origin allowlist    │
+│  /documents         ingest (chunk + index on write), list, delete│
+│  /chat              question → retrieval → cited answer/handoff  │
+│  /conversations     stored chats: list, get, delete              │
+│  /analytics/summary per-tenant usage analytics                   │
+├──────────────────────────────────────────────────────────────────┤
+│ app/security.py   PBKDF2 passwords + HS256 JWT (stdlib)          │
+│ app/config.py     env settings; refuses the dev secret in prod   │
+│ app/ratelimit.py  in-memory sliding-window limits (login, widget)│
+│ app/chunking.py   recursive chunker, 1000 chars / 15% overlap,   │
+│                   heading context + exact char offsets           │
+│ app/retrieval.py  FTS5 candidates → tenant-level BM25, 0..1      │
+│                   score, extractive answer with [n] citations    │
+│ app/llm.py        optional grounded generation + citation check  │
+│ app/widget.py     widget keys (hashed), origin allowlist, CORS   │
+│ app/analytics.py  per-tenant usage summary                       │
+│ app/database.py   schema, FTS5 index + triggers, migrations      │
+│ app/static/       vanilla JS app (chat, admin, analytics) and    │
+│                   widget.js                                      │
+└──────────────────────────────────────────────────────────────────┘
 ```
-
-**Multi-tenancy:** every tenant-owned row carries `tenant_id`; the id is
-taken from the JWT on every request, never from client input. Cross-tenant
-access returns 404 (the resource's existence is never leaked). Tenant-first
-composite indexes keep those filters fast.
-
-**Chunking:** documents are split on structural boundaries (paragraph →
-sentence → word) with ~15% overlap, so a chunk keeps its meaning on its
-own. Each chunk stores its Markdown heading and exact character offsets,
-which stage 2 uses for citations.
 
 ## Quickstart
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+COPILOT_ENV=dev .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Then open <http://127.0.0.1:8000/> — the web app (sign in or create a
-workspace, chat, and manage documents/conversations from Admin).
+`COPILOT_ENV=dev` allows the built-in development JWT secret. Outside dev
+mode the app refuses to start until `COPILOT_SECRET` is set to a real
+secret.
 
-Seed demo data (tenant `Demo Store`, user `demo` / `demo-password`,
-two sample documents):
+Open <http://127.0.0.1:8000/> to sign in or create a workspace, chat, and
+manage documents, the widget and conversations from Admin.
+
+Seed demo data (tenant `Demo Store`, user `demo` / `demo-password`, four
+sample documents). `--demo-chats` asks three questions so Analytics has
+data; `--widget-key` creates a widget key and prints an embed snippet:
 
 ```bash
-.venv/bin/python scripts/seed_demo.py
+.venv/bin/python scripts/seed_demo.py --demo-chats --widget-key
 ```
 
-Add `--demo-chats` to also ask three demo questions (two answered from
-the documents, one off-topic handoff) so the Analytics view has data:
+## Configuration
+
+| Variable | Default | Purpose |
+| -------- | ------- | ------- |
+| `COPILOT_SECRET` | dev-only value | JWT signing secret. **Required** unless `COPILOT_ENV=dev` |
+| `COPILOT_ENV` | `production` | `dev` allows the built-in secret |
+| `COPILOT_DB_PATH` | `copilot.db` next to `app/` | SQLite file |
+| `COPILOT_LOGIN_RATE` | `10/300` | failed logins per client IP + username (count/seconds) |
+| `COPILOT_LOGIN_IP_RATE` | `50/300` | failed logins per client IP |
+| `COPILOT_REGISTER_RATE` | `10/3600` | registrations per client IP |
+| `COPILOT_WIDGET_CHAT_RATE` | `20/60` | widget questions per widget key + client IP |
+| `COPILOT_WIDGET_CHAT_KEY_RATE` | `600/60` | widget questions per widget key |
+| `COPILOT_TRUST_PROXY` | off | take the client IP from `X-Forwarded-For` (only behind your own proxy) |
+| `COPILOT_LLM_PROVIDER` | unset | `openai`, `openai-compatible`, `ollama` or `none` |
+| `COPILOT_LLM_BASE_URL` / `_MODEL` / `_API_KEY` | per provider | see [LLM step](#optional-grounded-llm-step) |
+
+Rate limits are kept in memory per process: right for the single-process
+deployment shipped here; use a shared store before running several workers.
+
+## Roles
+
+`POST /auth/register` creates a tenant and its **owner**. The owner can add
+**admins** and **agents** (`POST /users`); admins can add agents.
+
+| | owner | admin | agent |
+| - | :-: | :-: | :-: |
+| Chat, read documents and conversations | ✓ | ✓ | ✓ |
+| Add/delete documents, delete conversations, analytics | ✓ | ✓ | |
+| Manage the widget key and allowed origins | ✓ | ✓ | |
+| Add/remove agents | ✓ | ✓ | |
+| Add/remove admins | ✓ | | |
+
+Roles are read from the database on every request, so a change applies to
+existing tokens immediately.
+
+## Embeddable widget
+
+![The widget on another origin, answering with a citation](docs/screenshots/widget-cross-origin.png)
+
+1. As owner or admin, open **Admin → Website widget** and create a widget
+   key (or `POST /widget-key`). The key is shown once; only its hash is
+   stored. Rotating it disables the old key immediately.
+2. Add your website's origin (e.g. `https://shop.example.com`) to the
+   allowed origins (`PUT /widget-key/origins`).
+3. Paste the snippet:
+
+```html
+<script src="https://YOUR-COPILOT-HOST/static/js/widget.js"
+        data-api="https://YOUR-COPILOT-HOST"
+        data-widget-key="wk_..."
+        data-title="Need help?"></script>
+```
+
+**Security model.** The widget key is public by design (it is in your page
+source), so it grants one thing: `POST /chat` for its tenant. Every other
+endpoint needs a signed-in user's token. Browsers on origins outside the
+allowlist are refused at the CORS preflight and on the request itself, and
+`Authorization` headers are never allowed cross-origin, so a user token
+cannot be used from another site. Pages served by the Copilot itself
+(such as the `/widget` demo) are always allowed. Requests are rate limited
+per key + client IP and per key, and a widget visitor can only continue
+widget conversations. Conversations from the widget show up in Admin with
+`channel: "widget"`.
+
+## Retrieval and answers
+
+`POST /chat` asks a question against the tenant's own documents:
+
+1. The question is tokenized (lowercase, stopwords removed, light
+   stemming so "refund" matches "refunds" and "refunded").
+2. SQLite FTS5 returns candidate chunks for the tenant, ranked by `bm25()`.
+   The index is updated by triggers when documents are added or deleted,
+   so nothing is rebuilt per request.
+3. Candidates are re-scored with BM25 using the tenant's own statistics
+   and normalised to 0..1. Below `MIN_SCORE` (0.12) a chunk is not an
+   answer; if nothing clears it, `needs_human` is `true`.
+4. The extractive answer quotes the best sentences of each hit with `[n]`
+   markers and one citation per chunk.
+
+Existing databases are migrated on startup (search terms backfilled, index
+built once).
+
+**Latency** (`scripts/bench_chat.py`, 4 synthetic documents, 4,406 chunks,
+30 questions, in-process): the old per-request TF-IDF rebuild took a median
+of about 350 ms per question; FTS5 takes about 17 ms. Ingestion is slower
+because it now indexes (about 1.4 s instead of 0.5 s for the 3.6 MB corpus).
+
+**Quality gate**: `tests/eval/eval_set.json` holds 21 labelled questions
+over the demo documents (18 answerable, 3 off-topic). `tests/test_eval.py`
+fails if hit@1 drops below 85%, hit@3 below 95%, or any off-topic question
+is answered. `python scripts/eval_retrieval.py` prints the per-question
+results (currently 18/18 hit@1, 3/3 handoffs).
+
+### Optional grounded LLM step
+
+Off unless `COPILOT_LLM_PROVIDER` is set; without it, answers are exactly
+the extractive ones above. When enabled, the model receives only the
+retrieved chunks as numbered sources and must cite them as `[n]`. Its reply
+is used only if it has citations, every citation points at a source it was
+given, and every paragraph cites. Otherwise (or on `NO_ANSWER`, an error or
+a timeout) the extractive answer is returned. Cited sources are renumbered
+and only they are returned as citations; `answer_mode` in the response is
+`generated` or `extractive`.
 
 ```bash
-.venv/bin/python scripts/seed_demo.py --demo-chats
+# Local and free, with Ollama (https://ollama.com):
+ollama pull llama3.2
+COPILOT_LLM_PROVIDER=ollama COPILOT_LLM_MODEL=llama3.2 ...
+
+# Any OpenAI-compatible server (LM Studio, llama.cpp, vLLM, hosted APIs):
+COPILOT_LLM_PROVIDER=openai-compatible \
+COPILOT_LLM_BASE_URL=http://127.0.0.1:1234/v1 COPILOT_LLM_MODEL=my-model ...
+
+# OpenAI (needs a key; without one the step stays off):
+COPILOT_LLM_PROVIDER=openai COPILOT_LLM_API_KEY=sk-... COPILOT_LLM_MODEL=gpt-4o-mini ...
 ```
 
-## Analytics (stage 4)
+## API
 
-`GET /analytics/summary?days=14` (Bearer token, own tenant only;
-`days` 1–90, default 14) returns headline totals plus a daily series,
-top cited documents and recent handoffs:
+| Method | Endpoint | Auth | Description |
+| ------ | -------- | ---- | ----------- |
+| GET | `/health` | none | liveness |
+| POST | `/auth/register` | none | `{tenant_name, username, password}` → tenant + owner (rate limited) |
+| POST | `/auth/login` | none | → `{access_token}` (JWT, 24 h; failed attempts rate limited) |
+| GET | `/auth/me` | Bearer | current user + tenant |
+| GET | `/tenants/me` | Bearer | current tenant |
+| GET | `/users` | owner/admin | users of the tenant |
+| POST | `/users` | owner/admin | `{username, password, role: admin\|agent}` |
+| DELETE | `/users/{id}` | owner/admin | remove an agent (owner: also admins) |
+| GET | `/widget-key` | owner/admin | `{configured, key_prefix, created_at, allowed_origins}` |
+| POST | `/widget-key` | owner/admin | create or rotate; `{allowed_origins?}` → includes `key` (shown once) |
+| PUT | `/widget-key/origins` | owner/admin | `{allowed_origins: [...]}` |
+| DELETE | `/widget-key` | owner/admin | revoke |
+| POST | `/documents` | owner/admin | `{title, content, source?}` → document with chunks |
+| GET | `/documents?page=&page_size=` | Bearer | paginated, own tenant only |
+| GET | `/documents/{id}` | Bearer | document with its chunks |
+| DELETE | `/documents/{id}` | owner/admin | delete document + chunks |
+| POST | `/chat` | Bearer or `X-Widget-Key` | `{question, conversation_id?, top_k?}` → `{answer, citations, needs_human, top_score, answer_mode}` |
+| OPTIONS | `/chat` | none | CORS preflight for allowlisted widget origins |
+| GET | `/conversations?page=&page_size=` | Bearer | paginated, own tenant only |
+| GET | `/conversations/{id}` | Bearer | conversation with its messages |
+| DELETE | `/conversations/{id}` | owner/admin | delete conversation + messages |
+| GET | `/analytics/summary?days=` | owner/admin | usage analytics (below) |
+
+Example:
+
+```bash
+curl -X POST http://127.0.0.1:8000/chat \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"question": "How can I return an item?"}'
+# → {"answer": "…within 30 days of delivery. … [1]",
+#    "citations": [{"document_title": "Returns Policy", "char_start": 0, …}],
+#    "needs_human": false, "top_score": 0.80, "answer_mode": "extractive"}
+```
+
+### Analytics
+
+`GET /analytics/summary?days=14` (`days` 1–90, default 14):
 
 | Field | Meaning |
 | ----- | ------- |
@@ -92,127 +251,49 @@ top cited documents and recent handoffs:
 | `top_documents[]` | the 5 most-cited documents with citation counts |
 | `recent_handoffs[]` | the last 10 questions that needed a human, with conversation id |
 
-The frontend's **Analytics** view (`#/analytics`, range 7 / 14 / 30 days)
-shows the same data as headline cards, a daily bar chart, a top-documents
-table and the recent handoffs list. Analytics is computed from the stored
-messages and the citations saved on each assistant reply — no new tables,
-no background job. Headline totals cover the tenant's whole history; the
-`days` window bounds only the daily series and the handoffs list.
+The **Analytics** view in the app shows the same data. Headline totals
+cover the tenant's whole history; `days` bounds the daily series and the
+handoffs list.
 
-## Docker (stage 4)
+## Docker
 
 ```bash
 cp .env.example .env   # set a real COPILOT_SECRET
 docker compose up --build
 ```
 
-Then open <http://127.0.0.1:8000/>. The API runs as a non-root user in a
+Then open <http://127.0.0.1:8000/>. The app runs as a non-root user in a
 single container; the SQLite database lives in the named volume
-`copilot-data` (mounted at `/data`, selected via `COPILOT_DB_PATH`),
-so data survives `docker compose down`. The compose file binds the port
-to localhost only and health-checks `GET /health` with stdlib urllib.
-Seed demo data inside the stack with:
+`copilot-data` (mounted at `/data`), so data survives `docker compose down`.
+The port is bound to localhost only and the container health-checks
+`GET /health`. Seed demo data inside the stack with:
 
 ```bash
-docker compose run --rm api python scripts/seed_demo.py --demo-chats
+docker compose run --rm api python scripts/seed_demo.py --base-url http://api:8000 --demo-chats
 ```
 
-> Note: Docker is not installed in the build VM, so the image and the
-> compose stack could not be run there — the compose file was validated
-> by YAML parsing and the Dockerfile follows the `docker_best_practices`
-> guidance (pinned base image, non-root user, no secrets in the image).
-> Run `docker compose up --build` on a machine with Docker to verify.
+To use a local Ollama from the container, set
+`COPILOT_LLM_BASE_URL=http://host.docker.internal:11434/v1` in `.env`.
 
-## Web frontend (stage 3)
-
-Vanilla JS, no build step, no external assets — served by the same
-FastAPI app:
-
-- **`GET /`** — the app shell: sign in / create workspace, **Chat**
-  (conversation list, message log with citations and the human-handoff
-  banner), **Admin** (upload documents, knowledge-base table, review
-  conversations with a “Needs human” badge).
-- **`GET /widget`** — demo + embed snippet for the **embeddable chat
-  widget** (`app/static/js/widget.js`): one `<script>` tag with
-  `data-api` / `data-token` / `data-title` adds a floating support chat
-  to any website, talking to the same `/chat` endpoint.
-- **Layers** (`frontend_architecture`): `js/api.js` is the only file
-  that calls `fetch()` (token storage, auth headers, error mapping);
-  `js/app.js` owns hash routing and auth; `js/chat.js` / `js/admin.js`
-  own their views. All dynamic content is rendered with `textContent` /
-  `createElement` — no `innerHTML` anywhere, so document text and
-  answers can never inject markup (enforced by a test).
-- **Accessibility** (`frontend_a11y`): labels on every input, `aria-live`
-  chat log, `role="alert"` handoff banner, visible focus styles, Escape
-  closes the widget, `prefers-reduced-motion` respected.
-
-## Chat (stage 2)
-
-`POST /chat` asks a question against the tenant's own documents only. The
-retriever is stdlib TF-IDF (cosine similarity, relevance floor 0.10, at
-least one shared content term). The answer is **extractive**: it quotes the
-best sentences from the top chunks with `[n]` markers and a citation per
-chunk (document title, chunk index, heading, exact char offsets, score,
-matched terms) — nothing is generated beyond the documents' own words. When
-no chunk clears the threshold, the answer is an honest handoff message and
-`needs_human` is `true`. Every exchange is stored as a conversation
-(`conversation_id` continues an existing chat).
-
-| Method | Endpoint | Auth | Description |
-| ------ | -------- | ---- | ----------- |
-| POST | `/chat` | Bearer | `{question, conversation_id?, top_k?}` → `{answer, citations, needs_human, top_score}` |
-| GET | `/conversations?page=&page_size=` | Bearer | paginated, own tenant only |
-| GET | `/conversations/{id}` | Bearer | conversation with its messages |
-| DELETE | `/conversations/{id}` | Bearer | delete conversation + messages |
-
-Example:
+## Development
 
 ```bash
-curl -X POST http://127.0.0.1:8000/chat \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"question": "How can I return an item?"}'
-# → {"answer": "…within 30 days of delivery. … [1]", "citations": [{"document_title": "Returns Policy", "char_start": 0, "char_end": 515, "score": 0.4416, …}], "needs_human": false, "top_score": 0.4416}
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/ruff check .
+.venv/bin/python -m pytest tests/ -q
 ```
 
-## API (stage 1)
+Dependencies are pinned to exact versions (`requirements.txt` for the app,
+`requirements-dev.txt` adds pytest, ruff and the test client transport).
+CI runs ruff and pytest on Python 3.11 and 3.12 for every push and pull
+request.
 
-| Method | Endpoint | Auth | Description |
-| ------ | -------- | ---- | ----------- |
-| GET | `/health` | — | liveness |
-| POST | `/auth/register` | — | `{tenant_name, username, password}` → tenant + owner user |
-| POST | `/auth/login` | — | → `{access_token}` (JWT, 24 h) |
-| GET | `/auth/me` | Bearer | current user + tenant |
-| GET | `/tenants/me` | Bearer | current tenant |
-| POST | `/documents` | Bearer | `{title, content, source?}` → document with chunks |
-| GET | `/documents?page=&page_size=` | Bearer | paginated, own tenant only |
-| GET | `/documents/{id}` | Bearer | document with its chunks |
-| DELETE | `/documents/{id}` | Bearer | delete document + chunks |
+Tests use a throwaway SQLite file per test and cover chunking invariants,
+auth and rate limits, roles, tenant isolation, FTS5 retrieval (ranking,
+stemming, index sync on delete, migration of old databases), the widget key
+(scope, rotation, CORS preflight and origin checks, rate limits), the LLM
+step with fake providers (no network), the retrieval eval set, analytics,
+and the frontend (served pages, no-`innerHTML` XSS guard, `node --check` on
+every JS file, a full register → chat journey).
 
-Set `COPILOT_SECRET` in production — the default JWT secret is dev-only.
-
-## Tests
-
-```bash
-.venv/bin/python -m pytest tests/ -q   # 68 tests, all passing
-```
-
-Tests use a throwaway SQLite file per test (via the `get_db` dependency
-override) and cover chunking invariants (sizes, offsets, overlap, headings,
-hard-splits), auth, tenant isolation and pagination, plus retrieval ranking,
-the handoff threshold, citation offset integrity, conversation storage and
-cross-tenant chat isolation, analytics totals/rates/series/ranking and
-isolation, and the frontend (served pages, static assets, no-`innerHTML`
-XSS guard, `node --check` on every JS file, full register → chat journey).
-
-## Skills used
-
-`fastapi_templates`, `multi_tenant_safety_checker`, `chunking_strategy`,
-`pytest_patterns`, `rag_implementation`, `hybrid_search_implementation`,
-`citation_verification`, `frontend_architecture`, `frontend_a11y`,
-`frontend_testing_best_practices`, `dashboard_builder`,
-`docker_compose`, `docker_best_practices` — see `STAGES.md` for the
-per-stage breakdown. (`analytics_dashboard` and
-`add_analytics_instrumentation` were checked and NOT used: the first is a
-LinkedIn-export dashboard, the second an Amplitude pipeline — neither
-fits a self-contained per-tenant usage summary.)
+See [CHANGELOG.md](CHANGELOG.md) for changes between versions.

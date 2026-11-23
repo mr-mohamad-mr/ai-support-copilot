@@ -1,4 +1,4 @@
-"""AI Support Copilot — FastAPI backend core (stage 1).
+"""AI Support Copilot — FastAPI application.
 
 Endpoints
 ---------
@@ -7,25 +7,31 @@ Endpoints
 - ``POST /auth/login`` — JWT bearer <redacted>
 - ``GET /auth/me`` — current user + tenant
 - ``GET /tenants/me`` — current tenant
+- ``GET/POST /users``, ``DELETE /users/{id}`` — manage a tenant's admins
+  and agents (owner/admin only)
+- ``GET/POST/DELETE /widget-key``, ``PUT /widget-key/origins`` — the
+  tenant's public widget key and its CORS origin allowlist (owner/admin)
 - ``POST /documents`` — ingest a text/markdown document (chunked on write)
 - ``GET /documents`` — paginated list, own tenant only
 - ``GET /documents/{id}`` — document with its chunks
 - ``DELETE /documents/{id}`` — delete document + chunks
-- ``POST /chat`` — ask a question; TF-IDF retrieval over the tenant's
-  chunks, extractive answer with citations, needs_human handoff flag
+- ``POST /chat`` — ask a question (Bearer JWT or public ``X-Widget-Key``);
+  FTS5/BM25 retrieval over the tenant's chunks, extractive (or optional
+  citation-checked LLM) answer with citations, needs_human handoff flag
 - ``GET /conversations`` — paginated list of stored conversations
 - ``GET /conversations/{id}`` — conversation with its messages
 - ``DELETE /conversations/{id}`` — delete a conversation + its messages
-- ``GET /analytics/summary`` — per-tenant usage analytics (stage 4):
+- ``GET /analytics/summary`` — per-tenant usage analytics:
   question counts, handoff rate, daily series, top cited documents,
   recent questions that needed a human
-- ``GET /`` — web app shell (stage 3): auth, chat UI, admin pages
-- ``GET /widget`` — embeddable chat widget demo page (stage 3)
-- ``GET /static/*`` — the frontend's CSS/JS assets (stage 3)
+- ``GET /`` — web app shell: auth, chat UI, admin pages
+- ``GET /widget`` — embeddable chat widget demo page
+- ``GET /static/*`` — the frontend's CSS/JS assets
 
-Tenant isolation: the tenant id always comes from the JWT, never from the
-request. Every document/chunk query is filtered by it, and cross-tenant
-access returns 404 (never revealing that the resource exists elsewhere).
+Tenant isolation: the tenant id always comes from the JWT (or the widget
+key), never from the request body or URL. Every document/chunk query is
+filtered by it, and cross-tenant access returns 404 (never revealing that
+the resource exists elsewhere).
 """
 
 from __future__ import annotations
@@ -87,6 +93,7 @@ from .security import (
     verify_password,
 )
 
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     # Refuse to start with the dev-only JWT secret outside COPILOT_ENV=dev.
@@ -103,13 +110,13 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 @app.get("/", include_in_schema=False)
 def frontend_index() -> FileResponse:
-    """The web app shell (stage 3): auth + chat + admin, vanilla JS."""
+    """The web app shell: auth + chat + admin, vanilla JS."""
     return FileResponse(STATIC_DIR / "index.html", media_type="text/html")
 
 
 @app.get("/widget", include_in_schema=False)
 def widget_demo() -> FileResponse:
-    """Demo page for the embeddable chat widget (stage 3)."""
+    """Demo page for the embeddable chat widget."""
     return FileResponse(STATIC_DIR / "widget-demo.html", media_type="text/html")
 
 
@@ -357,7 +364,9 @@ def get_widget_key(user: ManagerDep, db: DbDep) -> WidgetKeyInfo:
 
 
 @app.post("/widget-key", response_model=WidgetKeyCreated, status_code=status.HTTP_201_CREATED)
-def create_widget_key(user: ManagerDep, db: DbDep, data: WidgetKeyIn | None = None) -> WidgetKeyCreated:
+def create_widget_key(
+    user: ManagerDep, db: DbDep, data: WidgetKeyIn | None = None
+) -> WidgetKeyCreated:
     """Create the tenant's widget key, or rotate it: the old key stops
     working immediately. Optionally sets the origin allowlist too."""
     key = widget.new_key()
@@ -482,9 +491,9 @@ def delete_document(doc_id: int, user: ManagerDep, db: DbDep) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Chat (stage 2): TF-IDF retrieval over the tenant's chunks, extractive
-# answer with per-chunk citations, needs_human handoff flag, and
-# conversation storage — all tenant-scoped by the JWT, like documents.
+# Chat: FTS5/BM25 retrieval over the tenant's chunks, extractive answer
+# (or optional citation-checked LLM answer) with per-chunk citations,
+# needs_human handoff flag, and conversation storage — all tenant-scoped.
 # ---------------------------------------------------------------------------
 
 
@@ -515,9 +524,9 @@ def _store_message(
     needs_human: bool = False,
     citations: list[dict] | None = None,
 ) -> None:
-    """Store one message. Assistant replies may carry their citations
-    (stage 4): a compact JSON list of ``{document_id, document_title,
-    score}`` so analytics can rank the documents that answer questions.
+    """Store one message. Assistant replies may carry their citations:
+    a compact JSON list of ``{document_id, document_title, score}`` so
+    analytics can rank the documents that answer questions.
     Handoff replies store an empty list."""
     db.execute(
         "INSERT INTO messages (conversation_id, tenant_id, role, content,"
@@ -755,7 +764,7 @@ def delete_conversation(conv_id: int, user: ManagerDep, db: DbDep) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Analytics (stage 4): per-tenant usage summary, computed from the stored
+# Analytics: per-tenant usage summary, computed from the stored
 # messages and their citations. Tenant-scoped by the JWT, like everything
 # else; another tenant's numbers are never visible.
 # ---------------------------------------------------------------------------

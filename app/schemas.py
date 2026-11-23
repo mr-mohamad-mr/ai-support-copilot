@@ -1,4 +1,4 @@
-"""Pydantic schemas for the AI Support Copilot API (stage 1)."""
+"""Pydantic schemas for the AI Support Copilot API."""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ class UserSummary(BaseModel):
 
 class TokenOut(BaseModel):
     access_token: str
-    token_type: str = "bearer"
+    token_type: str = "bearer"  # noqa: S105 - the OAuth token type, not a secret
 
 
 class DocumentCreate(BaseModel):

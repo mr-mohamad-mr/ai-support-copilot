@@ -43,7 +43,7 @@ def test_overlap_repeats_tail_content():
     chunks = chunk_text(text, chunk_size=150, chunk_overlap=60)
     assert len(chunks) > 1
     # The start of chunk N+1 must appear inside chunk N (the overlap).
-    for prev, nxt in zip(chunks, chunks[1:]):
+    for prev, nxt in zip(chunks, chunks[1:], strict=False):
         assert nxt.text[:30] in prev.text
 
 

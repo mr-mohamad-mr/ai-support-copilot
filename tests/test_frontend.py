@@ -1,4 +1,4 @@
-"""Stage 3 — frontend tests.
+"""Frontend tests.
 
 Behaviour-level: the served pages, the static assets, and a full
 user journey (register → login → ingest → chat) exercised through the

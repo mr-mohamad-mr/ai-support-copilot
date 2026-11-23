@@ -1,5 +1,6 @@
 """AI Support Copilot — multi-tenant AI support platform.
 
-Stage 1: FastAPI backend core — tenants, JWT auth, document ingestion
-with recursive chunking (the RAG knowledge-base foundation).
+FastAPI + SQLite backend: tenants, users and roles, document ingestion
+with recursive chunking, FTS5/BM25 retrieval, cited answers with human
+handoff, an embeddable widget and per-tenant analytics.
 """

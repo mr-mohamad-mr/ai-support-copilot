@@ -1,11 +1,11 @@
-"""Per-tenant usage analytics (stage 4).
+"""Per-tenant usage analytics.
 
 All metrics are computed from data the platform already stores —
 ``messages`` (every question and answer, with the ``needs_human`` flag)
 and the citations now saved on each assistant message — so analytics
 needs no new tables and no background job.
 
-Design notes (``dashboard_builder`` / ``metrics_dashboard``):
+Design notes:
 show an operator what they need to act on — how many questions arrive,
 how many the copilot answers on its own, which documents actually get
 cited, and which questions still need a human — not every metric that
@@ -96,7 +96,7 @@ def compute_summary(db: sqlite3.Connection, tenant_id: int, days: int) -> dict:
     ]
 
     # Top cited documents, from the citations stored on assistant
-    # messages at chat time (stage 2 never persisted them; stage 4 does).
+    # messages at chat time (older messages without citations count as none).
     # Also yields the mean top-citation score across answered questions.
     counts: dict[int, dict] = {}
     top_scores: list[float] = []
@@ -118,7 +118,11 @@ def compute_summary(db: sqlite3.Connection, tenant_id: int, days: int) -> dict:
                 continue
             entry = counts.setdefault(
                 doc_id,
-                {"document_id": doc_id, "document_title": cit.get("document_title", ""), "citations": 0},
+                {
+                    "document_id": doc_id,
+                    "document_title": cit.get("document_title", ""),
+                    "citations": 0,
+                },
             )
             entry["citations"] += 1
     top_documents = sorted(

@@ -1,4 +1,4 @@
-/* AI Support Copilot — frontend styles (stage 3).
+/* AI Support Copilot — frontend styles.
    No build step, no external assets: one stylesheet for the app shell,
    chat view, admin view and the embeddable widget demo. */
 
@@ -36,7 +36,7 @@ body {
 a { color: var(--brand); }
 a:hover { text-decoration-thickness: 2px; }
 
-/* Visible keyboard focus everywhere (frontend_a11y). */
+/* Visible keyboard focus everywhere. */
 :focus-visible { outline: none; box-shadow: var(--focus); border-radius: 4px; }
 
 button, input, textarea, select { font: inherit; color: inherit; }
@@ -274,7 +274,7 @@ td.num, th.num { text-align: right; }
 .copilot-widget-form { display: flex; gap: 0.5rem; padding: 0.6rem; border-top: 1px solid var(--line); }
 .copilot-widget-form input { flex: 1; }
 
-/* --- Analytics (stage 4) ------------------------------------------- */
+/* --- Analytics ------------------------------------------- */
 .range-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
 .range-row span { font-weight: 600; margin-right: 0.3rem; }
 .range-row button[aria-pressed="true"] {

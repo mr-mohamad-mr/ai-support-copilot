@@ -1,10 +1,10 @@
-"""API tests for stage 2: POST /chat, conversation storage, isolation."""
+"""API tests for POST /chat, conversation storage, isolation."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from conftest import alice, bob, client, register, auth_headers  # noqa: F401
+from conftest import auth_headers, register  # noqa: F401
 
 DEMO_DIR = Path(__file__).resolve().parent.parent / "demo-data"
 

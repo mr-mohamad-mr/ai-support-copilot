@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from conftest import auth_headers, register
+from conftest import register
 
 SAMPLE_DOC = (
     "# Returns Policy\n\n"

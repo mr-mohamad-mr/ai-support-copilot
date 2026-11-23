@@ -1,4 +1,4 @@
-# AI Support Copilot — single-container image (stage 4).
+# AI Support Copilot — single-container image.
 # Python 3.12 slim, stdlib-only app code plus FastAPI/uvicorn.
 # The SQLite database lives in /data (see docker-compose.yml), so the
 # container is stateless apart from its named volume.

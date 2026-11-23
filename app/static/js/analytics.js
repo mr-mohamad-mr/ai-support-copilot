@@ -1,8 +1,8 @@
-/* AI Support Copilot — analytics view (presentation layer, stage 4).
+/* AI Support Copilot — analytics view (presentation layer).
    Headline numbers, a daily-questions bar chart, the documents that
    actually answer questions, and the questions that still needed a
-   human. Guided by dashboard_builder: what an operator needs to act
-   on, not every metric available. All rendering is textContent-only;
+   human: what an operator needs to act on, not every metric
+   available. All rendering is textContent-only;
    the bar chart is plain divs, so no chart library is needed. */
 
 (function (global) {

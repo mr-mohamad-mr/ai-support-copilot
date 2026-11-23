@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 
-DEV_SECRET = "dev-only-change-me"
+DEV_SECRET = "dev-only-change-me"  # noqa: S105 - the refused default, not a secret
 DEV_ENVS = frozenset({"dev", "development", "test"})
 
 
