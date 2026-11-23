@@ -1,36 +1,53 @@
-"""TF-IDF retrieval + extractive answer composition (stage 2).
+"""Full-text retrieval (SQLite FTS5 + BM25) and extractive answers.
 
-Deliberately dependency-free (stdlib only) and deterministic, following the
-``rag_implementation`` skill's sparse-retrieval pattern: keyword/TF-IDF
-retrieval is the right first retriever for a support knowledge base, where
-queries reuse the documents' own vocabulary (policy terms, product names,
-error codes). No external embedding service, no paid API, no network.
+Retrieval is dependency-free: it uses the FTS5 module built into the
+standard library's ``sqlite3``. Support queries reuse the documents' own
+vocabulary (policy terms, product names, error codes), so sparse keyword
+retrieval is the right first retriever. No embedding service, no network.
 
-The ``hybrid_search_implementation`` skill's fusion idea is kept in mind
-for later stages (a dense retriever can be added as a second leg and fused
-by reciprocal-rank fusion), but stage 2 ships the sparse leg only, with
-scores logged on every citation so the fusion weights can be tuned later.
+How a question is answered:
 
-Citation integrity (``citation_verification`` principle, adapted from
-academic citations to RAG): every citation must point at a real chunk that
-exists in the tenant's database, with the exact ``char_start``/``char_end``
-offsets recorded at ingestion time — answers are assembled only from the
-retrieved chunks' own sentences, never invented. A citation whose offsets
-do not slice the stored document text is a bug, and the tests check that.
+1. The question is tokenized (lowercase alphanumerics, stopwords removed).
+2. FTS5 finds candidate chunks containing any query term, restricted to
+   the caller's tenant, ordered by FTS5's ``bm25()`` (``CANDIDATE_POOL``).
+   The index is maintained by triggers (see ``database.py``), so nothing
+   is rebuilt per request and query cost follows the index, not the corpus.
+3. The candidates are re-scored with BM25 using the *tenant's own*
+   statistics (chunk count, average length, per-term document frequency),
+   normalised to 0..1 by the best score the query could reach. That makes
+   the score comparable across questions, so a fixed relevance floor
+   (``MIN_SCORE``) decides between answering and handing off to a human.
+
+Citation integrity: every citation points at a real chunk of the tenant's
+database with the exact ``char_start``/``char_end`` offsets recorded at
+ingestion time; answers are assembled only from the retrieved chunks' own
+sentences, never invented (the optional LLM step in ``llm.py`` is checked
+against the same citations).
 """
 
 from __future__ import annotations
 
 import math
 import re
+import sqlite3
 from dataclasses import dataclass, field
 
-# Relevance floor: a chunk whose cosine similarity to the question is below
-# this is treated as "not an answer". Calibrated against the demo corpus in
-# tests/test_retrieval.py — on-topic questions score 0.3–0.6, unrelated ones
-# score 0.0–0.05. A chunk also needs at least one shared content term (see
-# ``search``), so a tiny cosine from pure stopword overlap can never pass.
-MIN_SCORE = 0.10
+# Relevance floor on the normalised BM25 score (0..1). A chunk below it is
+# "not an answer" and, if nothing clears it, the question is handed off to
+# a human. Calibrated on the demo corpus and tests/eval: on-topic questions
+# score roughly 0.25-0.6; a question sharing one incidental word with the
+# knowledge base scores below 0.12.
+MIN_SCORE = 0.12
+
+# BM25 parameters (the usual defaults) and how many FTS5 candidates are
+# re-scored per question.
+# A hit must also score at least this fraction of the best hit, so a strong
+# answer is not padded with weakly related chunks from other documents.
+RELATIVE_FLOOR = 0.4
+
+BM25_K1 = 1.2
+BM25_B = 0.75
+CANDIDATE_POOL = 50
 
 # How many chunks a chat answer may cite at most (and the API default).
 DEFAULT_TOP_K = 3
@@ -59,6 +76,41 @@ STOPWORDS = frozenset(
 )
 
 
+def stem(token: str) -> str:
+    """Light, conservative English suffix stripping.
+
+    Folds the plural / past / -ing / trailing-e variants support questions
+    use ("refunds", "refunded" -> "refund"; "arrive", "arriving" ->
+    "arriv"; "batteries" -> "battery"). Short tokens and numbers are kept
+    as they are. Applied identically to documents and questions.
+    """
+    if len(token) <= 3 or token.isdigit():
+        return token
+    if token.endswith("ies") and len(token) > 4:
+        token = token[:-3] + "y"
+    elif token.endswith("sses"):
+        token = token[:-2]
+    elif token.endswith(("ches", "shes", "xes", "zes")):
+        token = token[:-2]
+    elif token.endswith("s") and not token.endswith(("ss", "us", "is")):
+        token = token[:-1]
+    if token.endswith("ing") and len(token) > 5:
+        token = token[:-3]
+    elif token.endswith("ed") and len(token) > 4:
+        token = token[:-2]
+    if len(token) > 4 and token[-1] == token[-2] and token[-1] not in "lsz":
+        token = token[:-1]  # "shipped" -> "shipp" -> "ship"
+    if token.endswith("e") and len(token) > 4:
+        token = token[:-1]
+    return token
+
+
+def index_text(text: str) -> str:
+    """The normalised search terms of ``text``, space separated (stored in
+    ``chunks.search_text`` and indexed by FTS5)."""
+    return " ".join(stem(t) for t in tokenize(text))
+
+
 def tokenize(text: str) -> list[str]:
     """Lowercase alphanumeric tokens, stopwords removed.
 
@@ -84,90 +136,128 @@ class ScoredChunk:
     matched_terms: list[str] = field(default_factory=list)
 
 
-class TfIdfIndex:
-    """In-memory TF-IDF index over one tenant's chunks.
+def _fts_query(terms: list[str]) -> str:
+    # Terms are [a-z0-9]+ (see tokenize), so quoting them is always safe.
+    return " OR ".join(f'"{t}"' for t in terms)
 
-    Built fresh per chat request from the tenant's current chunks, so
-    document edits are reflected immediately with no stale-index problem.
-    Corpora here are small (a support KB is hundreds of chunks, not
-    millions), so a rebuild per request is cheap and keeps the code simple.
+
+def _idf(n_chunks: int, df: int) -> float:
+    # BM25 idf with the +1 inside the log (Lucene style): always positive,
+    # so tiny knowledge bases (two or three chunks) still rank sensibly.
+    return math.log(1 + (n_chunks - df + 0.5) / (df + 0.5))
+
+
+def search_chunks(
+    db: sqlite3.Connection, tenant_id: int, query: str, top_k: int = DEFAULT_TOP_K
+) -> list[ScoredChunk]:
+    """Rank ``tenant_id``'s chunks for ``query``; returns at most ``top_k``.
+
+    Only chunks with ``score >= MIN_SCORE`` (and at least one shared content
+    term, which the FTS match guarantees) are returned, best first. An empty
+    query, or one with no content terms, returns nothing.
     """
+    # Surface query terms (reported as matched_terms) keyed by their stem.
+    surface: dict[str, list[str]] = {}
+    for token in tokenize(query):
+        words = surface.setdefault(stem(token), [])
+        if token not in words:
+            words.append(token)
+    terms = list(surface)
+    if not terms:
+        return []
+    n_chunks, avg_len = db.execute(
+        "SELECT COUNT(*), AVG(word_count) FROM chunks WHERE tenant_id = ?",
+        (tenant_id,),
+    ).fetchone()
+    if not n_chunks:
+        return []
+    avg_len = float(avg_len or 1.0)
 
-    def __init__(self, chunks: list[dict]):
-        self._chunks = chunks
-        self._doc_count = len(chunks)
-        self._doc_freq: dict[str, int] = {}
-        self._vectors: list[dict[str, float]] = []
-        self._norms: list[float] = []
-        for chunk in chunks:
-            tokens = tokenize(chunk["text"])
-            counts: dict[str, int] = {}
-            for token in tokens:
+    candidates = db.execute(
+        "SELECT c.id, c.document_id, d.title AS document_title, c.idx, c.heading,"
+        " c.text, c.char_start, c.char_end, c.word_count, c.search_text"
+        " FROM chunks_fts CROSS JOIN chunks c ON c.id = chunks_fts.rowid"
+        " CROSS JOIN documents d ON d.id = c.document_id"
+        " WHERE chunks_fts MATCH ? AND c.tenant_id = ?"
+        " ORDER BY chunks_fts.rank LIMIT ?",
+        (_fts_query(terms), tenant_id, CANDIDATE_POOL),
+    ).fetchall()
+    if not candidates:
+        return []
+
+    idf: dict[str, float] = {}
+    for term in terms:
+        df = db.execute(
+            # CROSS JOIN pins the plan: walk the term's postings in the
+            # index, then filter by tenant (never probe FTS once per chunk).
+            "SELECT COUNT(*) FROM chunks_fts CROSS JOIN chunks c ON c.id = chunks_fts.rowid"
+            " WHERE chunks_fts MATCH ? AND c.tenant_id = ?",
+            (f'"{term}"', tenant_id),
+        ).fetchone()[0]
+        idf[term] = _idf(n_chunks, df)
+    # Best reachable score: every query term present with saturated tf.
+    # Terms the knowledge base never uses stay in the denominator, so a
+    # question that is mostly about something else scores low.
+    max_score = sum(idf.values()) * (BM25_K1 + 1)
+
+    scored: list[ScoredChunk] = []
+    for row in candidates:
+        doc_terms = row["search_text"].split()
+        counts: dict[str, int] = {}
+        for token in doc_terms:
+            if token in idf:
                 counts[token] = counts.get(token, 0) + 1
-            for term in counts:
-                self._doc_freq[term] = self._doc_freq.get(term, 0) + 1
-            self._vectors.append(counts)
-        for counts in self._vectors:
-            weights: dict[str, float] = {}
-            total = sum(counts.values()) or 1
-            for term, count in counts.items():
-                tf = count / total
-                idf = math.log((1 + self._doc_count) / (1 + self._doc_freq[term])) + 1.0
-                weights[term] = tf * idf
-            norm = math.sqrt(sum(w * w for w in weights.values())) or 1.0
-            self._vectors[len(self._norms)] = weights
-            self._norms.append(norm)
-
-    def search(self, query: str, top_k: int = DEFAULT_TOP_K) -> list[ScoredChunk]:
-        """Rank the tenant's chunks for ``query``; returns at most ``top_k``.
-
-        Only chunks with ``score >= MIN_SCORE`` and at least one shared
-        content term are returned, ordered by score descending. An empty
-        query (or one with no content terms) returns nothing.
-        """
-        query_terms = tokenize(query)
-        if not query_terms or not self._chunks:
-            return []
-        q_counts: dict[str, int] = {}
-        for term in query_terms:
-            q_counts[term] = q_counts.get(term, 0) + 1
-        q_weights: dict[str, float] = {}
-        for term, count in q_counts.items():
-            df = self._doc_freq.get(term, 0)
-            if df == 0:
-                continue  # term appears in no chunk: contributes nothing
-            idf = math.log((1 + self._doc_count) / (1 + df)) + 1.0
-            q_weights[term] = (count / len(query_terms)) * idf
-        q_norm = math.sqrt(sum(w * w for w in q_weights.values()))
-        if q_norm == 0:
-            return []
-
-        scored: list[ScoredChunk] = []
-        for i, chunk in enumerate(self._chunks):
-            weights = self._vectors[i]
-            matched = [t for t in q_weights if t in weights]
-            if not matched:
-                continue
-            dot = sum(q_weights[t] * weights[t] for t in matched)
-            score = dot / (q_norm * self._norms[i])
-            if score < MIN_SCORE:
-                continue
-            scored.append(
-                ScoredChunk(
-                    chunk_id=chunk["id"],
-                    document_id=chunk["document_id"],
-                    document_title=chunk["document_title"],
-                    index=chunk["idx"],
-                    heading=chunk["heading"],
-                    text=chunk["text"],
-                    char_start=chunk["char_start"],
-                    char_end=chunk["char_end"],
-                    score=round(score, 4),
-                    matched_terms=sorted(matched),
-                )
+        if not counts:
+            continue
+        length_norm = 1 - BM25_B + BM25_B * (row["word_count"] or 1) / avg_len
+        raw = sum(
+            idf[t] * tf * (BM25_K1 + 1) / (tf + BM25_K1 * length_norm) for t, tf in counts.items()
+        )
+        score = raw / max_score
+        if score < MIN_SCORE:
+            continue
+        scored.append(
+            ScoredChunk(
+                chunk_id=row["id"],
+                document_id=row["document_id"],
+                document_title=row["document_title"],
+                index=row["idx"],
+                heading=row["heading"],
+                text=row["text"],
+                char_start=row["char_start"],
+                char_end=row["char_end"],
+                score=round(score, 4),
+                matched_terms=sorted(w for t in counts for w in surface[t]),
             )
-        scored.sort(key=lambda s: (-s.score, s.document_id, s.index))
-        return scored[:top_k]
+        )
+    scored.sort(key=lambda s: (-s.score, s.document_id, s.index))
+    if scored:
+        floor = scored[0].score * RELATIVE_FLOOR
+        scored = [s for s in scored if s.score >= floor]
+    return scored[:top_k]
+
+
+def insert_chunks(db: sqlite3.Connection, document_id: int, tenant_id: int, chunks) -> None:
+    """Store a document's chunks with their search terms. The FTS5 index is
+    updated by the ``chunks_fts_ai`` trigger in the same transaction."""
+    db.executemany(
+        "INSERT INTO chunks (document_id, tenant_id, idx, text, heading, char_start,"
+        " char_end, word_count, search_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (
+                document_id,
+                tenant_id,
+                c.index,
+                c.text,
+                c.heading,
+                c.char_start,
+                c.char_end,
+                c.word_count,
+                index_text(c.text),
+            )
+            for c in chunks
+        ],
+    )
 
 
 _HEADING_MARKER_RE = re.compile(r"(^|(?<=[.!?]\s))#{1,6}\s+")

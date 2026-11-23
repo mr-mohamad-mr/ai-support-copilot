@@ -44,10 +44,10 @@ from .analytics import DEFAULT_DAYS, MAX_DAYS, compute_summary
 from .chunking import chunk_text
 from .database import DEFAULT_DB_PATH, connect
 from .retrieval import (
-    DEFAULT_TOP_K,
     FALLBACK_ANSWER,
-    TfIdfIndex,
     compose_answer,
+    insert_chunks,
+    search_chunks,
 )
 from .schemas import (
     AnalyticsSummary,
@@ -212,23 +212,7 @@ def create_document(data: DocumentCreate, user: UserDep, db: DbDep) -> DocumentD
         (user["tenant_id"], data.title, data.source, data.content, len(data.content), len(chunks)),
     )
     doc_id = cur.lastrowid
-    db.executemany(
-        "INSERT INTO chunks (document_id, tenant_id, idx, text, heading, char_start,"
-        " char_end, word_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        [
-            (
-                doc_id,
-                user["tenant_id"],
-                c.index,
-                c.text,
-                c.heading,
-                c.char_start,
-                c.char_end,
-                c.word_count,
-            )
-            for c in chunks
-        ],
-    )
+    insert_chunks(db, doc_id, user["tenant_id"], chunks)
     db.commit()
     return DocumentDetail(
         id=doc_id,
@@ -384,17 +368,10 @@ def chat(data: ChatIn, user: UserDep, db: DbDep) -> ChatOut:
         conversation_id = cur.lastrowid
     _store_message(db, conversation_id, tenant_id, "user", data.question)
 
-    # Retrieval runs over this tenant's chunks only — the WHERE clause is
-    # the isolation boundary (see database.py); another tenant's documents
-    # can never be cited, whatever the question asks for.
-    rows = db.execute(
-        "SELECT c.id, c.document_id, d.title AS document_title, c.idx, c.heading,"
-        " c.text, c.char_start, c.char_end"
-        " FROM chunks c JOIN documents d ON d.id = c.document_id"
-        " WHERE c.tenant_id = ? ORDER BY c.document_id, c.idx",
-        (tenant_id,),
-    ).fetchall()
-    hits = TfIdfIndex([dict(r) for r in rows]).search(data.question, top_k=data.top_k)
+    # Retrieval runs over this tenant's chunks only: the FTS5 search joins
+    # back to chunks and filters on tenant_id (the isolation boundary, see
+    # database.py), so another tenant's documents can never be cited.
+    hits = search_chunks(db, tenant_id, data.question, top_k=data.top_k)
 
     if hits:
         answer, citations = compose_answer(data.question, hits)
