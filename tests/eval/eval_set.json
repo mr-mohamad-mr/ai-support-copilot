@@ -1,0 +1,32 @@
+{
+  "description": "Retrieval eval set over demo-data/: each question names the document that should answer it. Off-topic questions (expected_document null) must hand off to a human.",
+  "documents": {
+    "Returns Policy": "returns-policy.md",
+    "Shipping FAQ": "shipping-faq.md",
+    "Account and Billing": "account-billing.md",
+    "Warranty and Repairs": "warranty-repairs.md"
+  },
+  "cases": [
+    {"question": "How can I return an item?", "expected_document": "Returns Policy"},
+    {"question": "How many days do I have to send something back for a refund?", "expected_document": "Returns Policy"},
+    {"question": "When will my refund arrive?", "expected_document": "Returns Policy"},
+    {"question": "Can I exchange a jumper for a different size?", "expected_document": "Returns Policy"},
+    {"question": "Do I get a prepaid return label?", "expected_document": "Returns Policy"},
+    {"question": "How long does express delivery take?", "expected_document": "Shipping FAQ"},
+    {"question": "How long is standard delivery internationally?", "expected_document": "Shipping FAQ"},
+    {"question": "Where do I find my tracking link?", "expected_document": "Shipping FAQ"},
+    {"question": "My parcel says delivered but I cannot find it", "expected_document": "Shipping FAQ"},
+    {"question": "I forgot my password, how do I reset it?", "expected_document": "Account and Billing"},
+    {"question": "Which payment methods do you accept? Is PayPal ok?", "expected_document": "Account and Billing"},
+    {"question": "When is my card charged?", "expected_document": "Account and Billing"},
+    {"question": "Where can I download a VAT invoice?", "expected_document": "Account and Billing"},
+    {"question": "How do I update my billing address?", "expected_document": "Account and Billing"},
+    {"question": "Is a cracked screen covered by the warranty?", "expected_document": "Warranty and Repairs"},
+    {"question": "How do I make a warranty claim for a faulty product?", "expected_document": "Warranty and Repairs"},
+    {"question": "My battery only holds 70% charge after six months", "expected_document": "Warranty and Repairs"},
+    {"question": "How long does a paid screen repair take?", "expected_document": "Warranty and Repairs"},
+    {"question": "What is the weather in Paris today?", "expected_document": null},
+    {"question": "Who won the football match last night?", "expected_document": null},
+    {"question": "Tell me a joke about cats", "expected_document": null}
+  ]
+}

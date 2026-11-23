@@ -42,7 +42,7 @@ from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 
-from . import config, ratelimit, widget
+from . import config, llm, ratelimit, widget
 from .analytics import DEFAULT_DAYS, MAX_DAYS, compute_summary
 from .chunking import chunk_text
 from .database import DEFAULT_DB_PATH, connect
@@ -91,6 +91,7 @@ from .security import (
 async def lifespan(_app: FastAPI):
     # Refuse to start with the dev-only JWT secret outside COPILOT_ENV=dev.
     config.validate_settings()
+    llm.get_provider()  # fail fast on a misconfigured COPILOT_LLM_PROVIDER
     yield
 
 
@@ -643,8 +644,17 @@ def chat(data: ChatIn, principal: PrincipalDep, response: Response, db: DbDep) -
     # database.py), so another tenant's documents can never be cited.
     hits = search_chunks(db, tenant_id, data.question, top_k=data.top_k)
 
+    answer_mode = "extractive"
     if hits:
         answer, citations = compose_answer(data.question, hits)
+        # Optional grounded LLM step: only the retrieved chunks are sent, and
+        # a reply whose citations don't check out keeps the extractive answer.
+        provider = llm.get_provider()
+        if provider is not None:
+            generated = llm.grounded_answer(data.question, hits, provider)
+            if generated is not None:
+                answer, citations = generated
+                answer_mode = "generated"
         needs_human = False
         top_score = hits[0].score
     else:
@@ -674,6 +684,7 @@ def chat(data: ChatIn, principal: PrincipalDep, response: Response, db: DbDep) -
         citations=[CitationOut(**c) for c in citations],
         needs_human=needs_human,
         top_score=top_score,
+        answer_mode=answer_mode,
     )
 
 

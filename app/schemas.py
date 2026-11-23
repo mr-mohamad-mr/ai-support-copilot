@@ -127,6 +127,9 @@ class ChatOut(BaseModel):
     citations: list[CitationOut]
     needs_human: bool
     top_score: float
+    # "extractive" (quoted sentences) or "generated" (optional LLM step,
+    # citation-checked against the retrieved chunks).
+    answer_mode: str = "extractive"
 
 
 class MessageOut(BaseModel):

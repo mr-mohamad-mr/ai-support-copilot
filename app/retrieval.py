@@ -332,21 +332,24 @@ def compose_answer(question: str, hits: list[ScoredChunk]) -> tuple[str, list[di
         sentences = best_sentences(hit.text, query_terms, MAX_SENTENCES_PER_CHUNK)
         quote = " ".join(sentences)
         parts.append(f"{quote} [{n}]")
-        citations.append(
-            {
-                "document_id": hit.document_id,
-                "document_title": hit.document_title,
-                "chunk_index": hit.index,
-                "heading": hit.heading,
-                "char_start": hit.char_start,
-                "char_end": hit.char_end,
-                "excerpt": hit.text[:300],
-                "score": hit.score,
-                "matched_terms": hit.matched_terms,
-            }
-        )
+        citations.append(citation_for(hit))
     answer = " ".join(parts)
     return answer, citations
+
+
+def citation_for(hit: ScoredChunk) -> dict:
+    """The API citation for a retrieved chunk."""
+    return {
+        "document_id": hit.document_id,
+        "document_title": hit.document_title,
+        "chunk_index": hit.index,
+        "heading": hit.heading,
+        "char_start": hit.char_start,
+        "char_end": hit.char_end,
+        "excerpt": hit.text[:300],
+        "score": hit.score,
+        "matched_terms": hit.matched_terms,
+    }
 
 
 FALLBACK_ANSWER = (
