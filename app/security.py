@@ -16,13 +16,13 @@ import base64
 import hashlib
 import hmac
 import json
-import os
 import re
 import secrets
 import time
 from typing import Any
 
-SECRET_KEY = os.environ.get("COPILOT_SECRET", "dev-only-change-me")
+from .config import secret_key
+
 TOKEN_TTL_SECONDS = 24 * 3600
 
 
@@ -66,7 +66,7 @@ def create_token(user_id: int, username: str, tenant_id: int, role: str) -> str:
         ).encode()
     )
     signature = _b64url(
-        hmac.new(SECRET_KEY.encode(), f"{header}.{payload}".encode(), hashlib.sha256).digest()
+        hmac.new(secret_key().encode(), f"{header}.{payload}".encode(), hashlib.sha256).digest()
     )
     return f"{header}.{payload}.{signature}"
 
@@ -80,7 +80,7 @@ def decode_token(token: str) -> dict[str, Any]:
         header_b64, payload_b64, signature = token.split(".")
         expected = _b64url(
             hmac.new(
-                SECRET_KEY.encode(), f"{header_b64}.{payload_b64}".encode(), hashlib.sha256
+                secret_key().encode(), f"{header_b64}.{payload_b64}".encode(), hashlib.sha256
             ).digest()
         )
         if not hmac.compare_digest(signature, expected):

@@ -3,6 +3,7 @@ the app via the get_db dependency override."""
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -11,6 +12,13 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# The app refuses to start with the dev-only JWT secret unless
+# COPILOT_ENV=dev, so tests run with their own throwaway secret.
+os.environ.setdefault("COPILOT_SECRET", "test-only-secret-not-for-production")
+# The optional LLM step stays off unless a test opts in.
+os.environ.pop("COPILOT_LLM_PROVIDER", None)
+
+from app import ratelimit  # noqa: E402
 from app.database import connect  # noqa: E402
 from app.main import app, get_db  # noqa: E402
 
@@ -35,6 +43,7 @@ def client():
             conn.close()
 
     app.dependency_overrides[get_db] = _override_db
+    ratelimit.reset_all()
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()

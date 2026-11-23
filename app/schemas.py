@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator
 
 MAX_DOCUMENT_CHARS = 1_000_000
@@ -29,6 +31,19 @@ class RegisterIn(BaseModel):
 class LoginIn(BaseModel):
     username: str
     password: str
+
+
+class UserCreate(BaseModel):
+    username: str = Field(min_length=3, max_length=50, pattern=r"^[A-Za-z0-9_.-]+$")
+    password: str = Field(min_length=8, max_length=128)
+    role: Literal["admin", "agent"] = "agent"
+
+
+class UserSummary(BaseModel):
+    id: int
+    username: str
+    role: str
+    created_at: str
 
 
 class TokenOut(BaseModel):

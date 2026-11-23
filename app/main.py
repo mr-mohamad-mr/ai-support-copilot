@@ -32,14 +32,17 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 
+from . import config, ratelimit
 from .analytics import DEFAULT_DAYS, MAX_DAYS, compute_summary
 from .chunking import chunk_text
 from .database import DEFAULT_DB_PATH, connect
@@ -67,7 +70,9 @@ from .schemas import (
     RegisterIn,
     TenantOut,
     TokenOut,
+    UserCreate,
     UserOut,
+    UserSummary,
 )
 from .security import (
     AuthError,
@@ -78,7 +83,14 @@ from .security import (
     verify_password,
 )
 
-app = FastAPI(title="AI Support Copilot", version="0.1.0")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Refuse to start with the dev-only JWT secret outside COPILOT_ENV=dev.
+    config.validate_settings()
+    yield
+
+
+app = FastAPI(title="AI Support Copilot", version="0.2.0", lifespan=lifespan)
 bearer_scheme = HTTPBearer(auto_error=False)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -134,6 +146,41 @@ def current_user(
 
 UserDep = Annotated[dict, Depends(current_user)]
 
+# Roles: owner (created with the tenant) and admin manage the tenant —
+# documents, users, the widget key, conversation deletion and analytics.
+# Agents work the queue: they can chat, read documents and conversations.
+MANAGER_ROLES = ("owner", "admin")
+
+
+def require_roles(*roles: str) -> Callable[..., dict]:
+    def dependency(user: UserDep) -> dict:
+        if user["role"] not in roles:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, f"requires role: {' or '.join(roles)}"
+            )
+        return user
+
+    return dependency
+
+
+ManagerDep = Annotated[dict, Depends(require_roles(*MANAGER_ROLES))]
+
+
+def client_ip(request: Request) -> str:
+    if config.trust_proxy():
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded.strip():
+            return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _too_many(retry_after: int, headers: dict | None = None) -> HTTPException:
+    return HTTPException(
+        status.HTTP_429_TOO_MANY_REQUESTS,
+        "too many requests, try again later",
+        headers={"Retry-After": str(retry_after), **(headers or {})},
+    )
+
 
 def _document_or_404(db: sqlite3.Connection, doc_id: int, tenant_id: int) -> dict:
     row = db.execute(
@@ -150,7 +197,10 @@ def health() -> dict:
 
 
 @app.post("/auth/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
-def register(data: RegisterIn, db: DbDep) -> UserOut:
+def register(data: RegisterIn, request: Request, db: DbDep) -> UserOut:
+    wait = ratelimit.register_attempts.hit(client_ip(request))
+    if wait:
+        raise _too_many(wait)
     slug = slugify(data.tenant_name)
     base_slug, n = slug, 1
     while db.execute("SELECT 1 FROM tenants WHERE slug = ?", (slug,)).fetchone():
@@ -177,13 +227,26 @@ def register(data: RegisterIn, db: DbDep) -> UserOut:
 
 
 @app.post("/auth/login", response_model=TokenOut)
-def login(data: LoginIn, db: DbDep) -> TokenOut:
+def login(data: LoginIn, request: Request, db: DbDep) -> TokenOut:
+    # Throttle failed attempts per client IP + username, and per IP overall.
+    # Checked before the password so a locked-out caller learns nothing.
+    ip = client_ip(request)
+    account_key = f"{ip}|{data.username.lower()}"
+    wait = max(
+        ratelimit.login_failures.retry_after(account_key),
+        ratelimit.login_failures_ip.retry_after(ip),
+    )
+    if wait:
+        raise _too_many(wait)
     row = db.execute(
         "SELECT id, tenant_id, username, role, password_hash FROM users WHERE username = ?",
         (data.username,),
     ).fetchone()
     if row is None or not verify_password(data.password, row["password_hash"]):
+        ratelimit.login_failures.hit(account_key)
+        ratelimit.login_failures_ip.hit(ip)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
+    ratelimit.login_failures.reset(account_key)
     return TokenOut(
         access_token=create_token(row["id"], row["username"], row["tenant_id"], row["role"])
     )
@@ -203,8 +266,62 @@ def my_tenant(user: UserDep, db: DbDep) -> TenantOut:
     return _tenant_out(tenant)
 
 
+# ---------------------------------------------------------------------------
+# Users of a tenant: managers add admins/agents (owner only for admins).
+# ---------------------------------------------------------------------------
+
+
+def _user_summary(row: sqlite3.Row) -> UserSummary:
+    return UserSummary(
+        id=row["id"], username=row["username"], role=row["role"], created_at=row["created_at"]
+    )
+
+
+@app.get("/users", response_model=list[UserSummary])
+def list_users(user: ManagerDep, db: DbDep) -> list[UserSummary]:
+    rows = db.execute(
+        "SELECT id, username, role, created_at FROM users WHERE tenant_id = ? ORDER BY id",
+        (user["tenant_id"],),
+    ).fetchall()
+    return [_user_summary(r) for r in rows]
+
+
+@app.post("/users", response_model=UserSummary, status_code=status.HTTP_201_CREATED)
+def create_user(data: UserCreate, user: ManagerDep, db: DbDep) -> UserSummary:
+    if data.role == "admin" and user["role"] != "owner":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "only the owner can add admins")
+    try:
+        cur = db.execute(
+            "INSERT INTO users (tenant_id, username, password_hash, role) VALUES (?, ?, ?, ?)",
+            (user["tenant_id"], data.username, hash_password(data.password), data.role),
+        )
+        db.commit()
+    except sqlite3.IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "username already taken") from exc
+    row = db.execute(
+        "SELECT id, username, role, created_at FROM users WHERE id = ?", (cur.lastrowid,)
+    ).fetchone()
+    return _user_summary(row)
+
+
+@app.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_user(user_id: int, user: ManagerDep, db: DbDep) -> None:
+    row = db.execute(
+        "SELECT id, role FROM users WHERE id = ? AND tenant_id = ?", (user_id, user["tenant_id"])
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "user not found")
+    if row["role"] == "owner" or row["id"] == user["id"]:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "cannot delete the owner or yourself")
+    if row["role"] == "admin" and user["role"] != "owner":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "only the owner can remove admins")
+    db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    db.commit()
+
+
 @app.post("/documents", response_model=DocumentDetail, status_code=status.HTTP_201_CREATED)
-def create_document(data: DocumentCreate, user: UserDep, db: DbDep) -> DocumentDetail:
+def create_document(data: DocumentCreate, user: ManagerDep, db: DbDep) -> DocumentDetail:
     chunks = chunk_text(data.content)
     cur = db.execute(
         "INSERT INTO documents (tenant_id, title, source, content, char_count, chunk_count)"
@@ -293,7 +410,7 @@ def get_document(doc_id: int, user: UserDep, db: DbDep) -> DocumentDetail:
 
 
 @app.delete("/documents/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_document(doc_id: int, user: UserDep, db: DbDep) -> None:
+def delete_document(doc_id: int, user: ManagerDep, db: DbDep) -> None:
     _document_or_404(db, doc_id, user["tenant_id"])
     db.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
     db.commit()
@@ -465,7 +582,7 @@ def get_conversation(conv_id: int, user: UserDep, db: DbDep) -> ConversationDeta
 
 
 @app.delete("/conversations/{conv_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_conversation(conv_id: int, user: UserDep, db: DbDep) -> None:
+def delete_conversation(conv_id: int, user: ManagerDep, db: DbDep) -> None:
     _conversation_or_404(db, conv_id, user["tenant_id"])
     db.execute("DELETE FROM conversations WHERE id = ?", (conv_id,))
     db.commit()
@@ -480,7 +597,7 @@ def delete_conversation(conv_id: int, user: UserDep, db: DbDep) -> None:
 
 @app.get("/analytics/summary", response_model=AnalyticsSummary)
 def analytics_summary(
-    user: UserDep,
+    user: ManagerDep,
     db: DbDep,
     days: Annotated[int, Query(ge=1, le=MAX_DAYS)] = DEFAULT_DAYS,
 ) -> AnalyticsSummary:
